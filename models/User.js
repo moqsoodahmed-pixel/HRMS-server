@@ -40,9 +40,14 @@ const userSchema = new mongoose_1.Schema({
     password: { type: String, required: true, select: false },
     role: {
         type: String,
-        // CTO carries SUPER_ADMIN-equivalent effective permissions (see utils/roles.js)
-        // while remaining a distinct, identifiable role for display and audit purposes.
-        enum: ['SUPER_ADMIN', 'CTO', 'HR_ADMIN', 'FINANCE', 'MANAGER', 'EMPLOYEE', 'AUDITOR'],
+        // FOUNDER_CEO and CTO carry identical, full platform-administrator
+        // permissions (see utils/roles.js ELEVATED_ROLES) while remaining
+        // distinct, identifiable roles for display and audit purposes.
+        // SUPER_ADMIN is kept only for backward compatibility with
+        // pre-migration accounts/tokens — new elevated accounts use FOUNDER_CEO.
+        // PROJECT_HEAD and IT_HEAD/MANAGER are all team/department-scoped,
+        // non-elevated roles (see utils/roles.js TEAM_SCOPED_ROLES).
+        enum: ['FOUNDER_CEO', 'SUPER_ADMIN', 'CTO', 'DIRECTOR', 'IT_HEAD', 'PROJECT_HEAD', 'HR_ADMIN', 'FINANCE', 'MANAGER', 'EMPLOYEE', 'AUDITOR'],
         default: 'EMPLOYEE',
     },
     isActive: { type: Boolean, default: true },

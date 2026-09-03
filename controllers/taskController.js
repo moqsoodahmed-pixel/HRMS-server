@@ -376,6 +376,10 @@ const getOffboardingClearance = async (req, res, next) => {
     try {
         const { employeeId } = req.params;
         (0, helpers_1.assertObjectId)(employeeId, 'employee id');
+        if (!ADMIN_ROLES.includes(req.user?.role)) {
+            const { scope } = await (0, helpers_1.resolveEmployeeScope)(req.user);
+            (0, helpers_1.assertIdInScope)(scope, employeeId);
+        }
         const employee = await Employee_1.Employee.findById(employeeId).select('fullName dateOfExit').lean();
         if (!employee) throw new errorHandler_1.AppError('Employee not found', 404, 'NOT_FOUND');
 

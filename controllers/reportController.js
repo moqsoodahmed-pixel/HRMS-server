@@ -8,21 +8,39 @@ const Payroll_1 = require("../models/Payroll");
 const AssetOnboarding_1 = require("../models/AssetOnboarding");
 const helpers_1 = require("../utils/helpers");
 
-/** Shared employee filter for every report (department / status / free text). */
-function employeeFilter(query) {
+/**
+ * Every report is narrowed to the caller's resolveEmployeeScope() — the same
+ * scope used everywhere else in the app (self, self + direct reports for a
+ * TEAM_SCOPED_ROLES role like MANAGER/PROJECT_HEAD, own department for a
+ * DEPARTMENT_SCOPED_ROLES role like IT_HEAD). Unrestricted roles (elevated/
+ * HR/FINANCE/AUDITOR/DIRECTOR) get `undefined` and see everything. This is
+ * what stops a client-supplied `?department=Finance` or `?employeeId=...`
+ * from ever returning data outside the caller's scope.
+ */
+async function scopeFilterFor(req) {
+    const { scope } = await (0, helpers_1.resolveEmployeeScope)(req.user);
+    return scope;
+}
+
+/** Shared employee filter for every report (department / status / free text / scope). */
+function employeeFilter(query, scope) {
     const filter = { isArchived: false };
     if (query.department) filter.department = query.department;
     if (query.status) filter.status = query.status;
-    if (query.employeeId) {
-        (0, helpers_1.assertObjectId)(query.employeeId, 'employeeId');
-        filter._id = query.employeeId;
-    }
     if (query.search) {
         filter.$or = [
             { fullName: (0, helpers_1.searchRegex)(query.search) },
             { employeeCode: (0, helpers_1.searchRegex)(query.search) },
         ];
     }
+    const idClauses = [];
+    if (scope !== undefined) idClauses.push(scope === null ? { $in: [] } : scope);
+    if (query.employeeId) {
+        (0, helpers_1.assertObjectId)(query.employeeId, 'employeeId');
+        idClauses.push(query.employeeId);
+    }
+    if (idClauses.length === 1) filter._id = idClauses[0];
+    else if (idClauses.length > 1) filter.$and = idClauses.map((c) => ({ _id: c }));
     return filter;
 }
 
@@ -40,7 +58,7 @@ function reportRange(query) {
 
 const getEmployeeReport = async (req, res, next) => {
     try {
-        const filter = employeeFilter(req.query);
+        const filter = employeeFilter(req.query, await scopeFilterFor(req));
         const [employees, byDepartment, byStatus, byType, byGender] = await Promise.all([
             Employee_1.Employee.find(filter)
                 .select('employeeCode fullName officialEmail department designation status employmentType dateOfJoining dateOfExit workLocation')
@@ -88,7 +106,7 @@ exports.getEmployeeReport = getEmployeeReport;
 const getAttendanceReport = async (req, res, next) => {
     try {
         const { from, to } = reportRange(req.query);
-        const empFilter = employeeFilter(req.query);
+        const empFilter = employeeFilter(req.query, await scopeFilterFor(req));
         const employees = await Employee_1.Employee.find(empFilter).select('fullName employeeCode department').lean();
         const ids = employees.map((e) => e._id);
         const match = { date: { $gte: from, $lte: to }, employee: { $in: ids } };
@@ -158,7 +176,7 @@ exports.getAttendanceReport = getAttendanceReport;
 const getLeaveReport = async (req, res, next) => {
     try {
         const { from, to } = reportRange(req.query);
-        const empFilter = employeeFilter(req.query);
+        const empFilter = employeeFilter(req.query, await scopeFilterFor(req));
         const employees = await Employee_1.Employee.find(empFilter).select('fullName employeeCode department').lean();
         const ids = employees.map((e) => e._id);
         const match = { employee: { $in: ids }, startDate: { $lte: to }, endDate: { $gte: from } };
@@ -224,7 +242,7 @@ const getPayrollReport = async (req, res, next) => {
         const now = new Date();
         const month = parseInt(req.query.month, 10) || (now.getMonth() + 1);
         const year = parseInt(req.query.year, 10) || now.getFullYear();
-        const empFilter = employeeFilter(req.query);
+        const empFilter = employeeFilter(req.query, await scopeFilterFor(req));
         const employees = await Employee_1.Employee.find(empFilter).select('fullName employeeCode department designation').lean();
         const ids = employees.map((e) => e._id);
         const match = { month, year, employee: { $in: ids } };
@@ -290,21 +308,31 @@ exports.getPayrollReport = getPayrollReport;
 
 const getAssetReport = async (req, res, next) => {
     try {
+        // A team-/department-scoped caller's asset report is restricted to kit
+        // currently assigned within their scope — assets aren't "owned" by a
+        // department/team until assigned, so unassigned/available inventory
+        // stays out of scope for them. Unrestricted roles see everything.
+        const scope = await scopeFilterFor(req);
+        const assignedToClause = scope !== undefined ? (scope === null ? { $in: [] } : scope) : undefined;
+        const deptScope = assignedToClause ? { assignedTo: assignedToClause } : {};
+
         const [byStatus, byType, valueByType, assigned, unreturned] = await Promise.all([
-            AssetOnboarding_1.Asset.aggregate([{ $match: { isActive: true } }, { $group: { _id: '$status', count: { $sum: 1 } } }]),
-            AssetOnboarding_1.Asset.aggregate([{ $match: { isActive: true } }, { $group: { _id: '$type', count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
+            AssetOnboarding_1.Asset.aggregate([{ $match: { isActive: true, ...deptScope } }, { $group: { _id: '$status', count: { $sum: 1 } } }]),
+            AssetOnboarding_1.Asset.aggregate([{ $match: { isActive: true, ...deptScope } }, { $group: { _id: '$type', count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
             AssetOnboarding_1.Asset.aggregate([
-                { $match: { isActive: true } },
+                { $match: { isActive: true, ...deptScope } },
                 { $group: { _id: '$type', value: { $sum: '$purchaseValue' } } },
                 { $sort: { value: -1 } },
             ]),
-            AssetOnboarding_1.Asset.find({ isActive: true, status: 'ASSIGNED' })
+            AssetOnboarding_1.Asset.find({ isActive: true, status: 'ASSIGNED', ...deptScope })
                 .populate('assignedTo', 'fullName employeeCode department')
                 .select('assetCode name type assignedTo assignedAt purchaseValue condition location')
                 .sort({ assignedAt: -1 })
                 .limit(500)
                 .lean(),
-            AssetOnboarding_1.AssetAssignment.countDocuments({ returnedAt: { $exists: false } }),
+            AssetOnboarding_1.AssetAssignment.countDocuments(
+                assignedToClause ? { returnedAt: { $exists: false }, employee: assignedToClause } : { returnedAt: { $exists: false } },
+            ),
         ]);
 
         const counts = Object.fromEntries(byStatus.map((s) => [s._id, s.count]));
@@ -335,7 +363,7 @@ exports.getAssetReport = getAssetReport;
 /** Onboarding and offboarding progress across the organisation. */
 const getLifecycleReport = async (req, res, next) => {
     try {
-        const empFilter = employeeFilter(req.query);
+        const empFilter = employeeFilter(req.query, await scopeFilterFor(req));
         const employees = await Employee_1.Employee.find(empFilter).select('fullName employeeCode department dateOfJoining dateOfExit status').lean();
         const ids = employees.map((e) => e._id);
 

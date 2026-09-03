@@ -394,6 +394,12 @@ const getLeaveBalances = async (req, res, next) => {
             const emp = await Employee_1.Employee.findOne({ user: req.user.userId }).select('_id').lean();
             if (!emp) throw new errorHandler_1.AppError('No employee profile is linked to your account', 404, 'NO_EMPLOYEE_PROFILE');
             targetEmployeeId = emp._id.toString();
+        } else {
+            (0, helpers_1.assertObjectId)(employeeId, 'employee id');
+            // Non-HR/elevated restricted roles (MANAGER, IT_HEAD) may only see
+            // balances for an employee within their own scope.
+            const { scope } = await (0, helpers_1.resolveEmployeeScope)(req.user);
+            (0, helpers_1.assertIdInScope)(scope, employeeId);
         }
         (0, helpers_1.assertObjectId)(targetEmployeeId, 'employee id');
         await ensureBalances(targetEmployeeId, year);

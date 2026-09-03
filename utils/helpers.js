@@ -10,9 +10,12 @@ exports.startOfDay = startOfDay;
 exports.endOfDay = endOfDay;
 exports.dateRangeQuery = dateRangeQuery;
 exports.resolveEmployeeScope = resolveEmployeeScope;
+exports.isIdInScope = isIdInScope;
+exports.assertIdInScope = assertIdInScope;
 const mongoose_1 = require("mongoose");
 const errorHandler_1 = require("../middleware/errorHandler");
 const Employee_1 = require("../models/Employee");
+const roles_1 = require("./roles");
 
 /** Canonical department list — mirrored by client/src/constants.js. */
 exports.DEPARTMENTS = [
@@ -75,12 +78,18 @@ function dateRangeQuery(startDate, endDate) {
 
 /**
  * Resolves which employees the caller may see.
- *  - EMPLOYEE      → only themselves
- *  - MANAGER       → themselves plus direct reports
- *  - everyone else → unrestricted (`scope: undefined`)
+ *  - EMPLOYEE                        → only themselves
+ *  - a TEAM_SCOPED_ROLES role
+ *    (MANAGER, PROJECT_HEAD)         → themselves plus direct reports
+ *  - a DEPARTMENT_SCOPED_ROLES role
+ *    (e.g. IT_HEAD)                  → every employee in their own department
+ *  - everyone else                   → unrestricted (`scope: undefined`)
  * Returns `{ scope, employee, restricted }` where `scope` is a mongo clause for
  * the `employee` field. A restricted caller with no linked employee record gets
  * `scope: null`, which deliberately matches nothing rather than everything.
+ * Team/department scoping is driven entirely by the caller's own linked
+ * Employee record (their `manager` chain or `department`) — never a
+ * client-supplied filter — so it cannot be bypassed by query parameters.
  */
 async function resolveEmployeeScope(user) {
     const self = await Employee_1.Employee.findOne({ user: user?.userId })
@@ -89,7 +98,7 @@ async function resolveEmployeeScope(user) {
     if (user?.role === 'EMPLOYEE') {
         return { scope: self ? self._id : null, employee: self, restricted: true };
     }
-    if (user?.role === 'MANAGER') {
+    if (roles_1.isTeamScoped(user?.role)) {
         if (!self) return { scope: null, employee: null, restricted: true };
         const reports = await Employee_1.Employee.find({ manager: self._id }).select('_id').lean();
         return {
@@ -98,5 +107,29 @@ async function resolveEmployeeScope(user) {
             restricted: true,
         };
     }
+    if (roles_1.isDepartmentScoped(user?.role)) {
+        if (!self) return { scope: null, employee: null, restricted: true };
+        const deptPeers = await Employee_1.Employee.find({ department: self.department }).select('_id').lean();
+        return {
+            scope: { $in: deptPeers.map((e) => e._id) },
+            employee: self,
+            restricted: true,
+        };
+    }
     return { scope: undefined, employee: self, restricted: false };
+}
+
+/** True when `id` falls inside a resolveEmployeeScope() `scope` value. */
+function isIdInScope(scope, id) {
+    if (scope === undefined) return true;
+    if (scope === null || id === undefined || id === null) return false;
+    if (scope.$in) return scope.$in.map(String).includes(String(id));
+    return String(scope) === String(id);
+}
+
+/** Throws a 403 AppError unless `id` falls inside `scope`. */
+function assertIdInScope(scope, id, message = 'Access denied') {
+    if (!isIdInScope(scope, id)) {
+        throw new errorHandler_1.AppError(message, 403, 'FORBIDDEN');
+    }
 }

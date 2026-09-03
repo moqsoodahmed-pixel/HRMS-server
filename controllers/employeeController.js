@@ -389,12 +389,19 @@ const importEmployees = async (req, res, next) => {
 exports.importEmployees = importEmployees;
 
 /** Distinct values used to populate filter dropdowns, plus the manager picker. */
-const getFilterOptions = async (_req, res, next) => {
+const getFilterOptions = async (req, res, next) => {
     try {
+        // The manager picker must never hand out names outside the caller's own
+        // scope (e.g. an EMPLOYEE or IT_HEAD listing the whole company via this
+        // dropdown) — restrict it the same way the employee list itself is.
+        const { scope } = await (0, helpers_1.resolveEmployeeScope)(req.user);
+        const managerQuery = { isArchived: false, status: { $ne: 'INACTIVE' } };
+        if (scope !== undefined) managerQuery._id = scope === null ? { $in: [] } : scope;
+
         const [departments, designations, managers] = await Promise.all([
             Employee_1.Employee.distinct('department', { isArchived: false }),
             Employee_1.Employee.distinct('designation', { isArchived: false }),
-            Employee_1.Employee.find({ isArchived: false, status: { $ne: 'INACTIVE' } })
+            Employee_1.Employee.find(managerQuery)
                 .select('fullName employeeCode designation department')
                 .sort({ fullName: 1 })
                 .lean(),

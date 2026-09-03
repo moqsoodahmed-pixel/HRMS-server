@@ -69,10 +69,21 @@ const getAssets = async (req, res, next) => {
             ];
         }
 
-        // Employees only ever see the kit assigned to them.
-        if (req.user?.role === 'EMPLOYEE') {
-            const emp = await Employee_1.Employee.findOne({ user: req.user.userId }).select('_id').lean();
-            query.assignedTo = emp ? emp._id : { $in: [] };
+        // Restricted roles (EMPLOYEE → self, MANAGER → self + reports,
+        // IT_HEAD → own department) only ever see the kit assigned within
+        // their scope; everyone else is unrestricted. An explicit `employeeId`
+        // filter is intersected with the scope rather than overriding it.
+        const { scope } = await (0, helpers_1.resolveEmployeeScope)(req.user);
+        if (scope !== undefined) {
+            const clause = scope === null ? { $in: [] } : scope;
+            if (query.assignedTo) {
+                const allowed = clause.$in
+                    ? clause.$in.map(String).includes(String(query.assignedTo))
+                    : String(clause) === String(query.assignedTo);
+                if (!allowed) query.assignedTo = { $in: [] };
+            } else {
+                query.assignedTo = clause;
+            }
         }
 
         const [assets, total] = await Promise.all([
@@ -96,6 +107,8 @@ const getAsset = async (req, res, next) => {
         (0, helpers_1.assertObjectId)(id, 'asset id');
         const asset = await AssetOnboarding_1.Asset.findById(id).populate('assignedTo', 'fullName employeeCode department');
         if (!asset) throw new errorHandler_1.AppError('Asset not found', 404, 'NOT_FOUND');
+        const { scope } = await (0, helpers_1.resolveEmployeeScope)(req.user);
+        (0, helpers_1.assertIdInScope)(scope, asset.assignedTo?._id || asset.assignedTo);
         res.json({ data: asset });
     }
     catch (err) { next(err); }
@@ -234,6 +247,10 @@ const getAssetHistory = async (req, res, next) => {
     try {
         const { id } = req.params;
         (0, helpers_1.assertObjectId)(id, 'asset id');
+        const asset = await AssetOnboarding_1.Asset.findById(id).select('assignedTo').lean();
+        if (!asset) throw new errorHandler_1.AppError('Asset not found', 404, 'NOT_FOUND');
+        const { scope } = await (0, helpers_1.resolveEmployeeScope)(req.user);
+        (0, helpers_1.assertIdInScope)(scope, asset.assignedTo);
         const history = await AssetOnboarding_1.AssetAssignment.find({ asset: id })
             .populate('employee', 'fullName employeeCode department')
             .populate('assignedBy', 'email')

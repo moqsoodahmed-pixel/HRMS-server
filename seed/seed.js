@@ -895,11 +895,11 @@ async function seed() {
     console.log(`AUDITOR     : auditor@launcherdesk.com   / ${ADMIN_PASSWORD}`);
     console.log('-'.repeat(58));
     console.log('Employee logins (all use the same password below):');
-    console.log(`SUPER_ADMIN : moqsood@launcherdesk.com   / ${EMPLOYEE_PASSWORD}`);
-    console.log(`CTO         : bhojraj@launcherdesk.com   / ${EMPLOYEE_PASSWORD}  (SUPER_ADMIN-equivalent)`);
-    console.log(`HR_ADMIN    : ameena@launcherdesk.com    / ${EMPLOYEE_PASSWORD}`);
+    console.log(`FOUNDER_CEO : moqsood@launcherdesk.com   / ${EMPLOYEE_PASSWORD}`);
+    console.log(`CTO         : bhojraj@launcherdesk.com   / ${EMPLOYEE_PASSWORD}  (FOUNDER_CEO-equivalent)`);
+    console.log(`DIRECTOR    : ameena@launcherdesk.com    / ${EMPLOYEE_PASSWORD}  (read-only)`);
     console.log(`FINANCE     : meera.krishnan@launcherdesk.com / ${EMPLOYEE_PASSWORD}`);
-    console.log(`MANAGER     : srinivas@launcherdesk.com  / ${EMPLOYEE_PASSWORD}`);
+    console.log(`PROJECT_HEAD: srinivas@launcherdesk.com  / ${EMPLOYEE_PASSWORD}  (self + direct reports only)`);
     console.log(`EMPLOYEE    : jeevan@launcherdesk.com    / ${EMPLOYEE_PASSWORD}`);
     console.log(`AUDITOR     : aditya.saxena@launcherdesk.com / ${EMPLOYEE_PASSWORD}`);
     console.log('='.repeat(58));

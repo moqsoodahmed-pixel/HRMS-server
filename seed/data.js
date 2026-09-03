@@ -7,17 +7,20 @@ Object.defineProperty(exports, "__esModule", { value: true });
 
 /** The nine original DutyLaunch records — preserved exactly as they were. */
 const foundingEmployees = [
-    { employeeCode: 'DL001', firstName: 'Moqsood Ahmed', lastName: 'Abdul', officialEmail: 'moqsood@launcherdesk.com', designation: 'Founder & CEO', department: 'Management', status: 'ACTIVE', dateOfJoining: '2025-12-01', employmentType: 'FULL_TIME', role: 'SUPER_ADMIN', dateOfBirth: '1985-03-14', gender: 'Male', workLocation: 'Bengaluru HQ' },
+    { employeeCode: 'DL001', firstName: 'Moqsood Ahmed', lastName: 'Abdul', officialEmail: 'moqsood@launcherdesk.com', designation: 'Founder & CEO', department: 'Management', status: 'ACTIVE', dateOfJoining: '2025-12-01', employmentType: 'FULL_TIME', role: 'FOUNDER_CEO', dateOfBirth: '1985-03-14', gender: 'Male', workLocation: 'Bengaluru HQ' },
     { employeeCode: 'DL002', firstName: 'Santhosh', lastName: 'Kolar Ramesh', officialEmail: 'santhosh@launcherdesk.com', designation: 'COO', department: 'Management', status: 'INACTIVE', dateOfJoining: '2025-12-01', dateOfExit: '2026-01-11', exitReason: 'Resigned', employmentType: 'FULL_TIME', role: 'EMPLOYEE', dateOfBirth: '1987-07-02', gender: 'Male', workLocation: 'Bengaluru HQ' },
     { employeeCode: 'DL003', firstName: 'Junaid', lastName: 'Khan', officialEmail: 'junaid@launcherdesk.com', designation: 'Director', department: 'Management', status: 'INACTIVE', dateOfJoining: '2025-12-01', dateOfExit: '2026-01-11', exitReason: 'Resigned', employmentType: 'FULL_TIME', role: 'EMPLOYEE', dateOfBirth: '1986-11-23', gender: 'Male', workLocation: 'Bengaluru HQ' },
     { employeeCode: 'DL004', firstName: 'Umme', lastName: 'Saani', officialEmail: 'umme@launcherdesk.com', designation: 'Developer', department: 'Engineering', status: 'INACTIVE', dateOfJoining: '2025-12-01', dateOfExit: '2026-01-11', exitReason: 'Resigned', employmentType: 'FULL_TIME', role: 'EMPLOYEE', dateOfBirth: '1996-05-09', gender: 'Female', workLocation: 'Bengaluru HQ' },
-    { employeeCode: 'DL005', firstName: 'Ameena', lastName: 'Nikhath', officialEmail: 'ameena@launcherdesk.com', designation: 'Director', department: 'Management', status: 'ACTIVE', dateOfJoining: '2026-01-11', employmentType: 'FULL_TIME', role: 'HR_ADMIN', dateOfBirth: '1990-09-05', gender: 'Female', workLocation: 'Bengaluru HQ' },
+    { employeeCode: 'DL005', firstName: 'Ameena', lastName: 'Nikhath', officialEmail: 'ameena@launcherdesk.com', designation: 'Director', department: 'Management', status: 'ACTIVE', dateOfJoining: '2026-01-11', employmentType: 'FULL_TIME', role: 'DIRECTOR', dateOfBirth: '1990-09-05', gender: 'Female', workLocation: 'Bengaluru HQ' },
     { employeeCode: 'DL006', firstName: 'Aakash', lastName: 'Pani', officialEmail: 'aakash@launcherdesk.com', designation: 'Junior Accounts Executive', department: 'Finance', status: 'INACTIVE', dateOfJoining: '2026-07-26', employmentType: 'FULL_TIME', role: 'FINANCE', dateOfBirth: '1999-02-18', gender: 'Male', workLocation: 'Bengaluru HQ' },
-    // Bhojraj holds the CTO role, which carries SUPER_ADMIN-equivalent effective
+    // Bhojraj holds the CTO role, which carries FOUNDER_CEO-equivalent effective
     // permissions (see server/utils/roles.js ELEVATED_ROLES) while keeping his
-    // own identifiable title — never disguised as SUPER_ADMIN.
-    { employeeCode: 'DL007', firstName: 'Bhojraj', lastName: 'R', officialEmail: 'bhojraj@launcherdesk.com', designation: 'CTO', department: 'Engineering', status: 'ACTIVE', dateOfJoining: '2026-09-01', employmentType: 'FULL_TIME', role: 'CTO', dateOfBirth: '1993-08-30', gender: 'Male', workLocation: 'Bengaluru HQ' },
-    { employeeCode: 'DL008', firstName: 'Srinivas', lastName: 'Kumar', officialEmail: 'srinivas@launcherdesk.com', designation: 'Project Head', department: 'Engineering', status: 'ACTIVE', dateOfJoining: '2026-08-16', employmentType: 'FULL_TIME', role: 'MANAGER', dateOfBirth: '1991-04-12', gender: 'Male', workLocation: 'Bengaluru HQ' },
+    // own identifiable title — never disguised as FOUNDER_CEO.
+    { employeeCode: 'DL007', firstName: 'Bhojraj', lastName: 'R', officialEmail: 'bhojraj@launcherdesk.com', designation: 'Director & CTO', department: 'Management', status: 'ACTIVE', dateOfJoining: '2026-09-01', employmentType: 'FULL_TIME', role: 'CTO', dateOfBirth: '1993-08-30', gender: 'Male', workLocation: 'Bengaluru HQ' },
+    // Srinivas leads a project team — his role/department drive team-scoped
+    // access everywhere (see utils/roles.js TEAM_SCOPED_ROLES: self + direct
+    // reports via Employee.manager), never his name.
+    { employeeCode: 'DL008', firstName: 'Srinivas', lastName: 'Kumar', officialEmail: 'srinivas@launcherdesk.com', designation: 'Project Head', department: 'Engineering', status: 'ACTIVE', dateOfJoining: '2026-08-16', employmentType: 'FULL_TIME', role: 'PROJECT_HEAD', dateOfBirth: '1991-04-12', gender: 'Male', workLocation: 'Bengaluru HQ' },
     { employeeCode: 'DL009', firstName: 'Jeevan', lastName: 'Reddy', officialEmail: 'jeevan@launcherdesk.com', designation: 'Full Stack Trainee', department: 'Engineering', status: 'ACTIVE', dateOfJoining: '2026-08-20', employmentType: 'INTERN', role: 'EMPLOYEE', dateOfBirth: '2002-06-21', gender: 'Male', workLocation: 'Bengaluru HQ' },
 ];
 
@@ -53,8 +56,8 @@ const demoEmployees = [
     { employeeCode: 'DL028', firstName: 'Nikhil', lastName: 'Joshi', designation: 'Marketing Manager', department: 'Marketing', managerCode: 'DL024', dateOfJoining: '2026-02-23', dateOfBirth: '1992-02-26', gender: 'Male', basic: 66000 },
     { employeeCode: 'DL029', firstName: 'Tanvi', lastName: 'Kulkarni', designation: 'Content Strategist', department: 'Marketing', managerCode: 'DL028', dateOfJoining: '2026-04-27', dateOfBirth: '1997-05-19', gender: 'Female', basic: 44000 },
     { employeeCode: 'DL030', firstName: 'Gaurav', lastName: 'Malhotra', designation: 'Performance Marketing Analyst', department: 'Marketing', managerCode: 'DL028', dateOfJoining: '2026-06-15', dateOfBirth: '1996-11-02', gender: 'Male', basic: 47000 },
-    // IT
-    { employeeCode: 'DL031', firstName: 'Ravi', lastName: 'Chandran', designation: 'IT Administrator', department: 'IT', managerCode: 'DL007', dateOfJoining: '2026-03-02', dateOfBirth: '1991-09-13', gender: 'Male', basic: 56000 },
+    // IT — reports to Srinivas (Head of IT), not Bhojraj.
+    { employeeCode: 'DL031', firstName: 'Ravi', lastName: 'Chandran', designation: 'IT Administrator', department: 'IT', managerCode: 'DL008', dateOfJoining: '2026-03-02', dateOfBirth: '1991-09-13', gender: 'Male', basic: 56000 },
     { employeeCode: 'DL032', firstName: 'Shruti', lastName: 'Kapoor', designation: 'IT Support Engineer', department: 'IT', managerCode: 'DL031', dateOfJoining: '2026-05-25', dateOfBirth: '1998-03-21', gender: 'Female', basic: 39000 },
     // Operations
     { employeeCode: 'DL033', firstName: 'Manoj', lastName: 'Pillai', designation: 'Operations Manager', department: 'Operations', managerCode: 'DL001', dateOfJoining: '2026-02-02', dateOfBirth: '1989-07-08', gender: 'Male', basic: 72000 },
