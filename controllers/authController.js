@@ -12,6 +12,7 @@ const Employee_1 = require("../models/Employee");
 const auditService_1 = require("../services/auditService");
 const emailService_1 = require("../services/emailService");
 const errorHandler_1 = require("../middleware/errorHandler");
+const cookieConfig_1 = require("../utils/cookieConfig");
 const zod_1 = require("zod");
 const loginSchema = zod_1.z.object({
     email: zod_1.z.string().email(),
@@ -64,15 +65,10 @@ const login = async (req, res, next) => {
         user.lastLoginIp = req.ip;
         user.lastLoginUserAgent = req.headers['user-agent'];
         await user.save();
-        const expiresIn = rememberMe ? '7d' : '30m';
+        const { session, remember } = (0, cookieConfig_1.resolveSessionDurations)();
+        const { expiresIn, maxAge: cookieMaxAge } = rememberMe ? remember : session;
         const token = jsonwebtoken_1.default.sign({ userId: user._id.toString(), role: user.role, email: user.email }, process.env.JWT_SECRET, { expiresIn });
-        const cookieMaxAge = rememberMe ? 7 * 24 * 60 * 60 * 1000 : 30 * 60 * 1000;
-        res.cookie('token', token, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'lax',
-            maxAge: cookieMaxAge,
-        });
+        res.cookie(cookieConfig_1.AUTH_COOKIE_NAME, token, (0, cookieConfig_1.getAuthCookieOptions)({ maxAge: cookieMaxAge }));
         await auditService_1.auditService.log(req, { action: 'LOGIN', module: 'AUTH', recordId: user._id.toString(), recordLabel: email });
         const employee = user.employee ? await Employee_1.Employee.findById(user.employee).select('fullName employeeCode designation department profilePhoto') : null;
         res.json({
@@ -90,7 +86,7 @@ exports.login = login;
 const logout = async (req, res, next) => {
     try {
         await auditService_1.auditService.log(req, { action: 'LOGOUT', module: 'AUTH' });
-        res.clearCookie('token');
+        res.clearCookie(cookieConfig_1.AUTH_COOKIE_NAME, (0, cookieConfig_1.getClearCookieOptions)());
         res.json({ message: 'Logged out successfully' });
     }
     catch (err) {

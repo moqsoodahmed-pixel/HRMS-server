@@ -6,10 +6,24 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.authorizeOwnerOrAdmin = exports.authorize = exports.authenticate = void 0;
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const { isElevated } = require("../utils/roles");
+const { AUTH_COOKIE_NAME } = require("../utils/cookieConfig");
+
+/**
+ * Safe, secret-free diagnostics for the exact failure mode described in the
+ * "login succeeds, everything after 401s" bug class: whether a cookie/header
+ * arrived at all (a cross-site cookie / CORS / proxy problem) vs. whether one
+ * arrived but failed verification (a JWT_SECRET / clock / expiry problem).
+ * NEVER logs the token, the secret, or any request body/header value itself.
+ */
+function logAuthFailure(req, { tokenPresent, errName }) {
+    const detail = tokenPresent ? `token present, verification failed (${errName})` : 'no token present';
+    console.warn(`[auth] 401 on ${req.method} ${req.originalUrl} — ${detail}`);
+}
 
 const authenticate = (req, res, next) => {
-    const token = req.cookies?.token || req.headers.authorization?.replace('Bearer ', '');
+    const token = req.cookies?.[AUTH_COOKIE_NAME] || req.headers.authorization?.replace('Bearer ', '');
     if (!token) {
+        logAuthFailure(req, { tokenPresent: false });
         res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Authentication required' } });
         return;
     }
@@ -18,7 +32,8 @@ const authenticate = (req, res, next) => {
         req.user = payload;
         next();
     }
-    catch {
+    catch (err) {
+        logAuthFailure(req, { tokenPresent: true, errName: err.name });
         res.status(401).json({ error: { code: 'INVALID_TOKEN', message: 'Invalid or expired token' } });
     }
 };

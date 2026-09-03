@@ -24,9 +24,25 @@ app.use((0, helmet_1.default)({
     contentSecurityPolicy: isProd ? undefined : false,
 }));
 app.set('trust proxy', 1);
-// CORS
+// CORS — CLIENT_URL may be a single origin or a comma-separated allowlist
+// (e.g. a staging and a production frontend). `credentials: true` means the
+// response can never use a `*` wildcard origin, so `origin` is a function
+// that reflects back only an exact, explicitly-configured match — never an
+// arbitrary origin — which is also required for the browser to expose the
+// Set-Cookie response to a cross-site frontend at all.
+const allowedOrigins = (process.env.CLIENT_URL || 'http://localhost:5173')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
 app.use((0, cors_1.default)({
-    origin: process.env.CLIENT_URL || 'http://localhost:5173',
+    origin(origin, callback) {
+        // No Origin header at all (same-origin requests, curl, health checks,
+        // server-to-server calls) — nothing to check against an allowlist.
+        // An origin outside the allowlist is denied (no CORS headers set, so
+        // the browser blocks it client-side) rather than raised as a server
+        // error — a mismatched Origin is routine background noise, not a fault.
+        callback(null, !origin || allowedOrigins.includes(origin));
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
@@ -60,7 +76,7 @@ app.use('/api', routes_1.default);
 // Unknown API routes must answer with JSON, never with the SPA shell.
 app.use('/api', errorHandler_1.notFound);
 // Serve the built React frontend when it exists (production / preview builds).
-const CLIENT_DIST = path_1.default.join(__dirname, '../client/dist');
+const CLIENT_DIST = path_1.default.join(__dirname, '../HRMS-client/dist');
 if (fs_1.default.existsSync(path_1.default.join(CLIENT_DIST, 'index.html'))) {
     app.use(express_1.default.static(CLIENT_DIST));
     app.get('*', (_req, res) => {
