@@ -40,8 +40,13 @@ function validateEnv() {
     // Safe, secret-free confirmation that signing/verification will actually
     // agree at runtime — never the secret value itself, only its presence and length.
     console.log(`🔐 JWT secret configured: yes (length ${process.env.JWT_SECRET.length})`);
-    console.log(`🍪 Cookie mode: ${process.env.COOKIE_CROSS_SITE === 'true' ? 'cross-site (SameSite=None; Secure)' : 'same-site (SameSite=Lax)'}`);
-    if (process.env.COOKIE_CROSS_SITE === 'true' && process.env.NODE_ENV !== 'production') {
-        console.warn('⚠️  COOKIE_CROSS_SITE=true forces Secure cookies, which browsers refuse over plain HTTP — cross-site cookies will not work here unless this is served over HTTPS.');
+    const { isCrossSiteCookies } = require('../utils/cookieConfig');
+    const crossSite = isCrossSiteCookies();
+    const source = process.env.COOKIE_CROSS_SITE
+        ? 'COOKIE_CROSS_SITE override'
+        : (process.env.RENDER_EXTERNAL_URL ? 'auto-detected from RENDER_EXTERNAL_URL vs CLIENT_URL' : 'default');
+    console.log(`🍪 Cookie mode: ${crossSite ? 'cross-site (SameSite=None; Secure)' : 'same-site (SameSite=Lax)'} [${source}]`);
+    if (crossSite && process.env.NODE_ENV !== 'production') {
+        console.warn('⚠️  Cross-site cookie mode forces Secure cookies, which browsers refuse over plain HTTP — cross-site cookies will not work here unless this is served over HTTPS.');
     }
 }

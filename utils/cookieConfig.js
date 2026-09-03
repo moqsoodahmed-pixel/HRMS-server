@@ -10,18 +10,44 @@ exports.AUTH_COOKIE_NAME = AUTH_COOKIE_NAME;
 
 const isProd = process.env.NODE_ENV === 'production';
 
+/** Extracts a hostname from a URL string, or null if it isn't a valid URL. */
+function safeHostname(value) {
+    try {
+        return new URL(value).hostname;
+    } catch {
+        return null;
+    }
+}
+
 /**
  * Whether the auth cookie must be usable across two different sites — a
- * separately-hosted frontend and backend in production (e.g. a Render static
- * site calling a different *.onrender.com backend). This is NEVER guessed
- * from request headers or NODE_ENV alone: it is controlled by an explicit
- * COOKIE_CROSS_SITE env var, because the deployment topology (same-origin vs
- * cross-site) is a deliberate architectural fact, not something safe to infer.
- * Defaults to false — the same-site, more restrictive cookie policy — which
- * is also what already worked for the local dev / same-origin case.
+ * separately-hosted frontend and backend in production (e.g. a Cloudflare
+ * Pages frontend calling a separate *.onrender.com backend — a different
+ * registrable domain, genuinely cross-site, not just cross-port).
+ *
+ * Resolution order:
+ *  1. An explicit `COOKIE_CROSS_SITE` env var ('true'/'false') always wins —
+ *     use this for any host that isn't Render, or to force a specific value.
+ *  2. On Render, every web service automatically gets `RENDER_EXTERNAL_URL`
+ *     (no manual setup required) — compared against the configured
+ *     `CLIENT_URL` host(s), this tells us the real topology without anyone
+ *     having to remember to set a second env var alongside `CLIENT_URL`.
+ *  3. Otherwise, default to false (same-site) — the more restrictive policy,
+ *     and what already worked for local dev / same-origin deployments.
+ * This is never guessed from request headers — only from deployment facts
+ * (env vars), because the topology is architectural, not per-request.
  */
 function isCrossSiteCookies() {
-    return process.env.COOKIE_CROSS_SITE === 'true';
+    if (process.env.COOKIE_CROSS_SITE === 'true') return true;
+    if (process.env.COOKIE_CROSS_SITE === 'false') return false;
+
+    const backendHost = safeHostname(process.env.RENDER_EXTERNAL_URL || '');
+    if (!backendHost) return false;
+    const clientHosts = (process.env.CLIENT_URL || '')
+        .split(',')
+        .map((s) => safeHostname(s.trim()))
+        .filter(Boolean);
+    return clientHosts.some((host) => host !== backendHost);
 }
 
 /**
