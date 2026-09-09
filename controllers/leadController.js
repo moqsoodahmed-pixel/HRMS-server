@@ -2,33 +2,31 @@
 const { Lead } = require("../models/Lead");
 const { AppError } = require("../middleware/errorHandler");
 const { isElevated } = require("../utils/roles");
-const { parsePagination } = require("../utils/helpers");
+const { parsePagination, assertObjectId } = require("../utils/helpers");
 
-/**
- * Roles that are allowed to upload leads (in addition to elevated roles).
- * PROJECT_HEAD is included here so they can upload CSV/Excel files.
- */
 const UPLOAD_ROLES = ["PROJECT_HEAD"];
+const VALID_STATUSES = ["NEW", "CONTACTED", "INTERESTED", "NOT_INTERESTED", "CONVERTED", "LOST"];
 
-/** Returns true when the caller may upload leads. */
 function canUpload(role) {
   return isElevated(role) || UPLOAD_ROLES.includes(role);
 }
 
-/**
- * Parses a CSV buffer into an array of row objects.
- * Handles both comma and semicolon delimiters, trims whitespace,
- * and strips BOM characters that Excel sometimes adds.
- */
+function canManage(role) {
+  return isElevated(role) || ["PROJECT_HEAD", "HR_ADMIN", "MANAGER"].includes(role);
+}
+
+/** Strip BOM, normalize headers */
+function normalizeHeader(h) {
+  return h.trim().toLowerCase().replace(/[\s\-]+/g, "_").replace(/[^a-z0-9_]/g, "");
+}
+
 function parseCSV(buffer) {
-  const text = buffer.toString("utf8").replace(/^\uFEFF/, ""); // strip BOM
+  const text = buffer.toString("utf8").replace(/^\uFEFF/, "");
   const lines = text.split(/\r?\n/).filter((l) => l.trim());
   if (lines.length < 2) throw new AppError("CSV file must have a header row and at least one data row", 400, "INVALID_FILE");
 
-  // Auto-detect delimiter
   const delimiter = lines[0].includes(";") ? ";" : ",";
-
-  const headers = lines[0].split(delimiter).map((h) => h.trim().toLowerCase().replace(/\s+/g, "_"));
+  const headers = lines[0].split(delimiter).map(normalizeHeader);
 
   return lines.slice(1).map((line) => {
     const values = line.split(delimiter).map((v) => v.trim().replace(/^"|"$/g, ""));
@@ -38,23 +36,22 @@ function parseCSV(buffer) {
   });
 }
 
-/**
- * Maps a parsed row to a Lead document shape.
- */
-function rowToLead(row, uploadedBy, uploadBatch) {
+function rowToLead(row, uploadedBy, uploadBatch, uploadBatchTimestamp) {
   const get = (...keys) => {
     for (const k of keys) {
-      const val = row[k] || row[k.replace(/_/g, "")] || row[k.replace(/_/g, " ")];
-      if (val && val.trim()) return val.trim();
+      const variants = [k, k.replace(/_/g, ""), k.replace(/_/g, " ")];
+      for (const v of variants) {
+        const val = row[v];
+        if (val && String(val).trim()) return String(val).trim();
+      }
     }
     return "";
   };
 
   const name = get("name", "full_name", "fullname", "contact_name", "customer_name", "lead_name");
-  if (!name) return null; // skip empty rows
+  if (!name) return null;
 
   const statusRaw = get("status", "lead_status", "stage").toUpperCase();
-  const VALID_STATUSES = ["NEW", "CONTACTED", "INTERESTED", "NOT_INTERESTED", "CONVERTED", "LOST"];
   const status = VALID_STATUSES.includes(statusRaw) ? statusRaw : "NEW";
 
   return {
@@ -66,166 +63,226 @@ function rowToLead(row, uploadedBy, uploadBatch) {
     status,
     uploadedBy,
     uploadBatch,
-    assignedTo: null, // will be set during distribution
+    uploadBatchTimestamp,
+    assignedTo: null,
+    statusHistory: [{ newStatus: status, changedBy: uploadedBy, changedAt: new Date() }],
   };
 }
 
-/**
- * Distributes leads equally among sales team members.
- * base = Math.floor(total / count); first `remainder` members get one extra.
- * Returns leads array with assignedTo populated.
+/** 
+ * Round-robin batch distribution: 50 leads per employee per round (configurable).
+ * Continues until all leads assigned.
  */
-async function distributeLeads(leads, uploadedBy) {
+async function distributeLeads(leads, uploadedBy, batchSize = 50) {
   const { Employee } = require("../models/Employee");
 
-  // Find all active employees in the Sales department
   const salesTeam = await Employee.find({
     department: { $regex: /^sales$/i },
     status: { $in: ["ACTIVE", "active", "Active"] },
-  })
-    .select("_id fullName")
-    .lean();
+  }).select("_id fullName").lean();
 
   if (salesTeam.length === 0) {
-    // No sales team found — assign all to uploader's employee record, or leave null
-    // We still import the leads; just leave assignedTo as null so admins can assign later
     return { leads, salesTeam: [], note: "No active Sales department employees found — leads imported unassigned." };
   }
 
-  const total = leads.length;
   const count = salesTeam.length;
-  const base = Math.floor(total / count);
-  const remainder = total % count;
+  const total = leads.length;
+  const now = new Date();
 
-  let cursor = 0;
-  const distribution = [];
+  // Track how many assigned per member
+  const assignedCount = salesTeam.map(() => 0);
+  let idx = 0;
+  let round = 1;
+  let positionInRound = 0;
 
-  salesTeam.forEach((member, idx) => {
-    const extra = idx < remainder ? 1 : 0;
-    const assigned = base + extra;
-    distribution.push({ member, assigned, startIndex: cursor, endIndex: cursor + assigned });
-    cursor += assigned;
-  });
+  for (let i = 0; i < total; i++) {
+    const memberIdx = idx % count;
+    leads[i].assignedTo = salesTeam[memberIdx]._id;
+    leads[i].assignedAt = now;
+    leads[i].assignmentRound = round;
+    leads[i].assignmentBatchSize = batchSize;
+    assignedCount[memberIdx]++;
+    positionInRound++;
 
-  // Stamp assignedTo on each lead
-  distribution.forEach(({ member, startIndex, endIndex }) => {
-    for (let i = startIndex; i < endIndex; i++) {
-      leads[i].assignedTo = member._id;
+    if (positionInRound >= batchSize * count) {
+      round++;
+      positionInRound = 0;
     }
-  });
+    idx++;
+    if (idx % count === 0 && positionInRound > 0) {
+      // continue round-robin
+    }
+  }
 
-  const note =
-    remainder === 0
-      ? `${base} leads each across ${count} sales team member(s)`
-      : `${base}–${base + 1} leads each across ${count} sales team member(s) (${remainder} member(s) get one extra)`;
+  // Actually do proper round-based distribution
+  // Reset and redo properly
+  for (let i = 0; i < total; i++) {
+    const globalSlot = i;
+    const employeeSlot = Math.floor(globalSlot / batchSize) % count;
+    const roundNum = Math.floor(Math.floor(globalSlot / batchSize) / count) + 1;
+    leads[i].assignedTo = salesTeam[employeeSlot]._id;
+    leads[i].assignedAt = now;
+    leads[i].assignmentRound = roundNum;
+    leads[i].assignmentBatchSize = batchSize;
+  }
 
-  return {
-    leads,
-    salesTeam: distribution.map(({ member, assigned }) => ({ name: member.fullName, assigned })),
-    note,
-  };
+  const distribution = salesTeam.map((member, i) => ({
+    name: member.fullName,
+    _id: member._id,
+    assigned: leads.filter(l => String(l.assignedTo) === String(member._id)).length,
+  }));
+
+  const note = `Distributed ${total} leads across ${count} sales employee(s) with ${batchSize} leads/employee/round.`;
+
+  return { leads, salesTeam: distribution, note };
+}
+
+/** Generate human-readable batch ID: UPLOAD-YYYY-MM-DD-NNN */
+async function generateBatchId() {
+  const today = new Date();
+  const dateStr = today.toISOString().slice(0, 10); // YYYY-MM-DD
+  const prefix = `UPLOAD-${dateStr}-`;
+  const count = await Lead.countDocuments({ uploadBatch: { $regex: `^${prefix}` } });
+  const seq = String(count + 1).padStart(3, "0");
+  return `${prefix}${seq}`;
+}
+
+// ─── Parse preview (without inserting) ─────────────────────────────────────
+
+/**
+ * POST /api/leads/preview
+ * Parse file and return stats without importing.
+ */
+const previewLeads = async (req, res, next) => {
+  try {
+    if (!canUpload(req.user?.role)) throw new AppError("Only Founder/CEO, CTO, or Project Head can upload leads", 403, "FORBIDDEN");
+    if (!req.file) throw new AppError("No file uploaded.", 400, "NO_FILE");
+
+    const rows = await parseFile(req.file);
+    const uploadedBy = req.user.userId;
+    const uploadBatch = "PREVIEW";
+
+    const leads = rows.map((row) => rowToLead(row, uploadedBy, uploadBatch, "")).filter(Boolean);
+    const totalRows = rows.length;
+    const validRows = leads.length;
+    const invalidRows = totalRows - validRows;
+
+    res.json({
+      data: {
+        totalRows,
+        validRows,
+        invalidRows,
+        sample: leads.slice(0, 5).map(l => ({ name: l.name, email: l.email, phone: l.phone, company: l.company })),
+      },
+    });
+  } catch (err) { next(err); }
+};
+
+async function parseFile(file) {
+  const { mimetype, buffer, originalname } = file;
+  const isCSV = mimetype === "text/csv" || originalname.endsWith(".csv");
+  const isExcel =
+    mimetype === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+    mimetype === "application/vnd.ms-excel" ||
+    originalname.endsWith(".xlsx") ||
+    originalname.endsWith(".xls");
+
+  if (!isCSV && !isExcel) throw new AppError("Only CSV (.csv) and Excel (.xlsx / .xls) files are supported", 400, "INVALID_FILE_TYPE");
+
+  if (isCSV) return parseCSV(buffer);
+
+  let XLSX;
+  try { XLSX = require("xlsx"); } catch {
+    throw new AppError("Excel parsing requires the 'xlsx' package.", 500, "MISSING_DEPENDENCY");
+  }
+  const workbook = XLSX.read(buffer, { type: "buffer" });
+  const sheetName = workbook.SheetNames[0];
+  const csvText = XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName]);
+  return parseCSV(Buffer.from(csvText));
 }
 
 /**
  * POST /api/leads/upload
- * FOUNDER_CEO, CTO, and PROJECT_HEAD may upload.
- * Parses every row, distributes equally to the sales team, and bulk-inserts.
  */
 const uploadLeads = async (req, res, next) => {
   try {
-    if (!canUpload(req.user?.role)) {
-      throw new AppError("Only Founder/CEO, CTO, or Project Head can upload leads", 403, "FORBIDDEN");
-    }
+    if (!canUpload(req.user?.role)) throw new AppError("Only Founder/CEO, CTO, or Project Head can upload leads", 403, "FORBIDDEN");
+    if (!req.file) throw new AppError("No file uploaded.", 400, "NO_FILE");
 
-    if (!req.file) {
-      throw new AppError("No file uploaded. Please attach a CSV or Excel file.", 400, "NO_FILE");
-    }
+    const rows = await parseFile(req.file);
+    const uploadBatchTimestamp = new Date().toISOString();
+    const uploadBatch = await generateBatchId();
 
-    const { mimetype, buffer, originalname } = req.file;
-    const isCSV = mimetype === "text/csv" || originalname.endsWith(".csv");
-    const isExcel =
-      mimetype === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
-      mimetype === "application/vnd.ms-excel" ||
-      originalname.endsWith(".xlsx") ||
-      originalname.endsWith(".xls");
+    // Get configured batch size
+    const { OrgSettings } = require("../models/OrgSettings");
+    const settings = await OrgSettings.findOne({ singletonKey: "default" }).lean();
+    const batchSize = settings?.leads?.batchSize || 50;
 
-    if (!isCSV && !isExcel) {
-      throw new AppError("Only CSV (.csv) and Excel (.xlsx / .xls) files are supported", 400, "INVALID_FILE_TYPE");
-    }
-
-    let rows = [];
-
-    if (isCSV) {
-      rows = parseCSV(buffer);
-    } else {
-      let XLSX;
-      try {
-        XLSX = require("xlsx");
-      } catch {
-        throw new AppError(
-          "Excel parsing requires the 'xlsx' package. Run: npm install xlsx in HRMS-server, then restart.",
-          500,
-          "MISSING_DEPENDENCY"
-        );
-      }
-      const workbook = XLSX.read(buffer, { type: "buffer" });
-      const sheetName = workbook.SheetNames[0];
-      const csvText = XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName]);
-      rows = parseCSV(Buffer.from(csvText));
-    }
-
-    const uploadBatch = new Date().toISOString();
     let leads = rows
-      .map((row) => rowToLead(row, req.user.userId, uploadBatch))
+      .map((row) => rowToLead(row, req.user.userId, uploadBatch, uploadBatchTimestamp))
       .filter(Boolean);
 
-    if (leads.length === 0) {
-      throw new AppError(
-        "No valid leads found in the file. Make sure your columns include at least a 'name' column.",
-        400,
-        "NO_VALID_ROWS"
-      );
-    }
+    const totalRows = rows.length;
+    const validRows = leads.length;
+    const invalidRows = totalRows - validRows;
 
-    // Distribute equally across the sales team
-    const { leads: distributedLeads, salesTeam, note } = await distributeLeads(leads, req.user.userId);
+    if (leads.length === 0) throw new AppError("No valid leads found in the file. Make sure columns include at least a 'name' column.", 400, "NO_VALID_ROWS");
+
+    // Stamp batch metadata
+    leads = leads.map(l => ({ ...l, totalInBatch: totalRows, validInBatch: validRows, skippedInBatch: invalidRows }));
+
+    const { leads: distributedLeads, salesTeam, note } = await distributeLeads(leads, req.user.userId, batchSize);
 
     const inserted = await Lead.insertMany(distributedLeads, { ordered: false });
+
+    // Audit log
+    try {
+      const { AuditLog } = require("../models/NotificationAudit");
+      await AuditLog.create({
+        userId: req.user.userId,
+        userEmail: req.user.email,
+        action: "LEAD_UPLOAD",
+        module: "leads",
+        recordLabel: uploadBatch,
+        newValue: { imported: inserted.length, salesTeamCount: salesTeam.length, batchSize },
+        ipAddress: req.ip,
+      });
+    } catch (_) {}
 
     res.status(201).json({
       data: {
         imported: inserted.length,
-        skipped: leads.length - inserted.length,
+        skipped: invalidRows,
+        totalRows,
         uploadBatch,
+        uploadBatchTimestamp,
         salesTeamCount: salesTeam.length,
         distribution: salesTeam,
         distributionNote: note,
-        message: `Successfully imported ${inserted.length} lead${inserted.length !== 1 ? "s" : ""} and distributed equally among ${salesTeam.length} sales team member(s).`,
+        batchSize,
+        message: `Successfully imported ${inserted.length} lead${inserted.length !== 1 ? "s" : ""} and distributed across ${salesTeam.length} sales team member(s).`,
       },
     });
-  } catch (err) {
-    next(err);
-  }
+  } catch (err) { next(err); }
 };
 
 /**
  * GET /api/leads
- * Sales team + Elevated roles. Returns paginated leads with optional filters.
- * Sales team members (EMPLOYEE role) only see leads assigned to them.
- * Query params: page, limit, status, search, uploadBatch
  */
 const getLeads = async (req, res, next) => {
   try {
     const { page, limit, skip } = parsePagination(req.query, 50);
-    const { status, search, uploadBatch } = req.query;
+    const { status, search, uploadBatch, assignedTo } = req.query;
 
     const query = {};
 
-    // Sales-team employees only see their own assigned leads
     if (req.user?.role === "EMPLOYEE") {
       const { Employee } = require("../models/Employee");
       const emp = await Employee.findOne({ user: req.user.userId }).select("_id").lean();
       if (emp) query.assignedTo = emp._id;
+      else return res.json({ data: [], meta: { total: 0, page, limit, totalPages: 0 } });
+    } else if (assignedTo) {
+      query.assignedTo = assignedTo;
     }
 
     if (status) query.status = status;
@@ -246,72 +303,278 @@ const getLeads = async (req, res, next) => {
       Lead.countDocuments(query),
     ]);
 
-    res.json({
-      data: leads,
-      meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
-    });
-  } catch (err) {
-    next(err);
-  }
+    res.json({ data: leads, meta: { total, page, limit, totalPages: Math.ceil(total / limit) } });
+  } catch (err) { next(err); }
+};
+
+/**
+ * GET /api/leads/:id
+ */
+const getLead = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    assertObjectId(id, "lead id");
+
+    const lead = await Lead.findById(id)
+      .populate("uploadedBy", "email")
+      .populate("assignedTo", "fullName employeeCode department")
+      .populate("statusUpdatedBy", "email")
+      .populate("statusHistory.changedBy", "email")
+      .populate("reassignmentHistory.changedBy", "email")
+      .populate("reassignmentHistory.fromEmployee", "fullName employeeCode")
+      .populate("reassignmentHistory.toEmployee", "fullName employeeCode")
+      .lean();
+
+    if (!lead) throw new AppError("Lead not found", 404, "NOT_FOUND");
+
+    // Employee can only see their own lead
+    if (req.user?.role === "EMPLOYEE") {
+      const { Employee } = require("../models/Employee");
+      const emp = await Employee.findOne({ user: req.user.userId }).select("_id").lean();
+      if (!emp || String(lead.assignedTo?._id) !== String(emp._id)) {
+        throw new AppError("Access denied", 403, "FORBIDDEN");
+      }
+    }
+
+    res.json({ data: lead });
+  } catch (err) { next(err); }
 };
 
 /**
  * PATCH /api/leads/:id/status
- * Sales team + Elevated. Updates a lead's status and optional notes.
  */
 const updateLeadStatus = async (req, res, next) => {
   try {
     const { id } = req.params;
+    assertObjectId(id, "lead id");
     const { status, notes } = req.body;
-    const VALID_STATUSES = ["NEW", "CONTACTED", "INTERESTED", "NOT_INTERESTED", "CONVERTED", "LOST"];
-    if (!VALID_STATUSES.includes(status)) {
-      throw new AppError(`Invalid status. Must be one of: ${VALID_STATUSES.join(", ")}`, 400, "INVALID_STATUS");
-    }
 
-    const lead = await Lead.findByIdAndUpdate(
-      id,
-      { status, ...(notes !== undefined ? { notes } : {}) },
-      { new: true }
-    );
+    if (!VALID_STATUSES.includes(status)) throw new AppError(`Invalid status. Must be one of: ${VALID_STATUSES.join(", ")}`, 400, "INVALID_STATUS");
+
+    const lead = await Lead.findById(id);
     if (!lead) throw new AppError("Lead not found", 404, "NOT_FOUND");
 
+    // Employee can only update their own lead
+    if (req.user?.role === "EMPLOYEE") {
+      const { Employee } = require("../models/Employee");
+      const emp = await Employee.findOne({ user: req.user.userId }).select("_id").lean();
+      if (!emp || String(lead.assignedTo) !== String(emp._id)) {
+        throw new AppError("Access denied", 403, "FORBIDDEN");
+      }
+    }
+
+    const previousStatus = lead.status;
+    lead.status = status;
+    if (notes !== undefined) lead.notes = notes;
+    lead.statusUpdatedAt = new Date();
+    lead.statusUpdatedBy = req.user.userId;
+    if (status === "CONTACTED") lead.lastContactedAt = new Date();
+
+    lead.statusHistory.push({
+      previousStatus,
+      newStatus: status,
+      changedBy: req.user.userId,
+      changedAt: new Date(),
+      notes: notes || "",
+    });
+
+    await lead.save();
+
+    // Audit log
+    try {
+      const { AuditLog } = require("../models/NotificationAudit");
+      await AuditLog.create({
+        userId: req.user.userId,
+        userEmail: req.user.email,
+        action: "LEAD_STATUS_CHANGE",
+        module: "leads",
+        recordId: String(lead._id),
+        recordLabel: lead.name,
+        oldValue: { status: previousStatus },
+        newValue: { status },
+        ipAddress: req.ip,
+      });
+    } catch (_) {}
+
     res.json({ data: lead });
-  } catch (err) {
-    next(err);
-  }
+  } catch (err) { next(err); }
+};
+
+/**
+ * PATCH /api/leads/:id/assign
+ * Management only — reassign a lead to another sales employee.
+ */
+const reassignLead = async (req, res, next) => {
+  try {
+    if (!canManage(req.user?.role)) throw new AppError("Only management can reassign leads", 403, "FORBIDDEN");
+
+    const { id } = req.params;
+    assertObjectId(id, "lead id");
+    const { employeeId, reason } = req.body;
+    assertObjectId(employeeId, "employee id");
+
+    const lead = await Lead.findById(id);
+    if (!lead) throw new AppError("Lead not found", 404, "NOT_FOUND");
+
+    const { Employee } = require("../models/Employee");
+    const emp = await Employee.findById(employeeId).lean();
+    if (!emp) throw new AppError("Employee not found", 404, "NOT_FOUND");
+
+    const fromEmployee = lead.assignedTo;
+    lead.reassignmentHistory.push({
+      fromEmployee,
+      toEmployee: employeeId,
+      changedBy: req.user.userId,
+      changedAt: new Date(),
+      reason: reason || "",
+    });
+    lead.assignedTo = employeeId;
+    lead.assignedAt = new Date();
+    await lead.save();
+
+    try {
+      const { AuditLog } = require("../models/NotificationAudit");
+      await AuditLog.create({
+        userId: req.user.userId,
+        userEmail: req.user.email,
+        action: "LEAD_REASSIGNED",
+        module: "leads",
+        recordId: String(lead._id),
+        recordLabel: lead.name,
+        oldValue: { assignedTo: fromEmployee },
+        newValue: { assignedTo: employeeId, reason },
+        ipAddress: req.ip,
+      });
+    } catch (_) {}
+
+    res.json({ data: lead });
+  } catch (err) { next(err); }
+};
+
+/**
+ * GET /api/leads/stats
+ */
+const getLeadStats = async (req, res, next) => {
+  try {
+    const { uploadBatch } = req.query;
+    const matchQuery = {};
+    if (uploadBatch) matchQuery.uploadBatch = uploadBatch;
+
+    const [statusAgg, employeeAgg, total, unassigned] = await Promise.all([
+      Lead.aggregate([
+        { $match: matchQuery },
+        { $group: { _id: "$status", count: { $sum: 1 } } },
+      ]),
+      Lead.aggregate([
+        { $match: { ...matchQuery, assignedTo: { $ne: null } } },
+        {
+          $group: {
+            _id: "$assignedTo",
+            total: { $sum: 1 },
+            contacted: { $sum: { $cond: [{ $in: ["$status", ["CONTACTED", "INTERESTED", "CONVERTED"]] }, 1, 0] } },
+            interested: { $sum: { $cond: [{ $eq: ["$status", "INTERESTED"] }, 1, 0] } },
+            converted: { $sum: { $cond: [{ $eq: ["$status", "CONVERTED"] }, 1, 0] } },
+            lost: { $sum: { $cond: [{ $eq: ["$status", "LOST"] }, 1, 0] } },
+            new: { $sum: { $cond: [{ $eq: ["$status", "NEW"] }, 1, 0] } },
+            not_interested: { $sum: { $cond: [{ $eq: ["$status", "NOT_INTERESTED"] }, 1, 0] } },
+          },
+        },
+        {
+          $lookup: {
+            from: "employees",
+            localField: "_id",
+            foreignField: "_id",
+            as: "employee",
+          },
+        },
+        { $unwind: { path: "$employee", preserveNullAndEmpty: true } },
+        {
+          $project: {
+            employeeId: "$_id",
+            name: "$employee.fullName",
+            employeeCode: "$employee.employeeCode",
+            total: 1, contacted: 1, interested: 1, converted: 1, lost: 1, new: 1, not_interested: 1,
+          },
+        },
+      ]),
+      Lead.countDocuments(matchQuery),
+      Lead.countDocuments({ ...matchQuery, assignedTo: null }),
+    ]);
+
+    const byStatus = {};
+    VALID_STATUSES.forEach(s => { byStatus[s] = 0; });
+    statusAgg.forEach(({ _id, count }) => { byStatus[_id] = count; });
+
+    const converted = byStatus.CONVERTED;
+    const conversionRate = total > 0 ? ((converted / total) * 100).toFixed(1) : "0.0";
+    const contactRate = total > 0 ? (((total - byStatus.NEW) / total) * 100).toFixed(1) : "0.0";
+
+    res.json({
+      data: {
+        total,
+        unassigned,
+        byStatus,
+        conversionRate: `${conversionRate}%`,
+        contactRate: `${contactRate}%`,
+        byEmployee: employeeAgg,
+      },
+    });
+  } catch (err) { next(err); }
 };
 
 /**
  * GET /api/leads/batches
- * Returns distinct upload batches. Elevated + PROJECT_HEAD.
  */
 const getUploadBatches = async (req, res, next) => {
   try {
-    if (!canUpload(req.user?.role)) {
-      throw new AppError("Forbidden", 403, "FORBIDDEN");
-    }
-    const batches = await Lead.distinct("uploadBatch");
-    res.json({ data: batches.sort().reverse() });
-  } catch (err) {
-    next(err);
-  }
+    if (!canUpload(req.user?.role)) throw new AppError("Forbidden", 403, "FORBIDDEN");
+
+    const batches = await Lead.aggregate([
+      { $match: { uploadBatch: { $exists: true, $ne: null } } },
+      {
+        $group: {
+          _id: "$uploadBatch",
+          total: { $sum: 1 },
+          uploadBatchTimestamp: { $first: "$uploadBatchTimestamp" },
+          uploadedBy: { $first: "$uploadedBy" },
+          createdAt: { $first: "$createdAt" },
+        },
+      },
+      { $sort: { createdAt: -1 } },
+      {
+        $lookup: {
+          from: "users",
+          localField: "uploadedBy",
+          foreignField: "_id",
+          as: "uploader",
+        },
+      },
+      { $unwind: { path: "$uploader", preserveNullAndEmpty: true } },
+      {
+        $project: {
+          batchId: "$_id",
+          total: 1,
+          uploadedAt: "$createdAt",
+          uploadedBy: "$uploader.email",
+          _id: 0,
+        },
+      },
+    ]);
+
+    res.json({ data: batches });
+  } catch (err) { next(err); }
 };
 
 /**
  * DELETE /api/leads/batch/:batch
- * Elevated + PROJECT_HEAD only.
  */
 const deleteBatch = async (req, res, next) => {
   try {
-    if (!canUpload(req.user?.role)) {
-      throw new AppError("Forbidden", 403, "FORBIDDEN");
-    }
+    if (!canUpload(req.user?.role)) throw new AppError("Forbidden", 403, "FORBIDDEN");
     const { batch } = req.params;
     const result = await Lead.deleteMany({ uploadBatch: decodeURIComponent(batch) });
     res.json({ data: { deleted: result.deletedCount } });
-  } catch (err) {
-    next(err);
-  }
+  } catch (err) { next(err); }
 };
 
-module.exports = { uploadLeads, getLeads, updateLeadStatus, getUploadBatches, deleteBatch };
+module.exports = { uploadLeads, previewLeads, getLeads, getLead, updateLeadStatus, reassignLead, getLeadStats, getUploadBatches, deleteBatch };
