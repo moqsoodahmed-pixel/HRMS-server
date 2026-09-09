@@ -304,6 +304,9 @@ async function seedTemplate(kind, employee, anchorDate) {
     if (toCreate.length) await Model.insertMany(toCreate);
     return toCreate.length;
 }
+// Exposed so exitRequestController's approval step can lay down the exact
+// same offboarding checklist as initiateOffboarding, instead of duplicating this logic.
+exports.seedTemplate = seedTemplate;
 
 const applyTemplate = (kind) => async (req, res, next) => {
     try {

@@ -89,6 +89,34 @@ const employeeSchema = new mongoose_1.Schema({
     // Lets the HR list and filters distinguish "nothing uploaded yet" from
     // "something was uploaded and rejected" without a third top-level status.
     hasRejectedDocuments: { type: Boolean, default: false },
+    /**
+     * Employee self-service onboarding gate. A brand-new EMPLOYEE account is
+     * NOT_STARTED and stays locked out of every operational module (see
+     * middleware/auth.js requireOnboardingApproved) until HR/Admin explicitly
+     * APPROVEs it — SUBMITTED alone never unlocks access. Existing employees
+     * predating this feature are backfilled to APPROVED by
+     * scripts/migrate-onboarding-status.js so they are never retroactively
+     * locked out. Non-EMPLOYEE roles are never gated by this field.
+     */
+    onboardingStatus: {
+        type: String,
+        enum: ['NOT_STARTED', 'IN_PROGRESS', 'SUBMITTED', 'APPROVED', 'REJECTED'],
+        default: 'NOT_STARTED',
+        index: true,
+    },
+    // Highest step (1-7) the employee has saved progress for.
+    onboardingStep: { type: Number, default: 0 },
+    // Free-form per-step data (personal/education/experience/bank/emergency/documents).
+    // Kept as Mixed since these steps are not queried individually, only read/written
+    // as a whole by the employee's own onboarding wizard.
+    onboardingData: { type: mongoose_1.Schema.Types.Mixed, default: {} },
+    onboardingSubmittedAt: { type: Date },
+    onboardingApprovedAt: { type: Date },
+    onboardingApprovedBy: { type: mongoose_1.Schema.Types.ObjectId, ref: 'User' },
+    onboardingRejectionReason: { type: String },
+    // Optional — an employee with none falls back to the global work-hours
+    // window (WORK_START_HOUR/WORK_END_HOUR) in attendanceController.js.
+    shift: { type: mongoose_1.Schema.Types.ObjectId, ref: 'Shift' },
 }, { timestamps: true });
 exports.Employee = mongoose_1.default.model('Employee', employeeSchema);
 //# sourceMappingURL=Employee.js.map

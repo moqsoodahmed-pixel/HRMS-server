@@ -37,7 +37,8 @@ const leaveTypeSchema = zod_1.z.object({
 const holidaySchema = zod_1.z.object({
     name: zod_1.z.string().min(1, 'Name is required'),
     date: zod_1.z.string().min(1, 'Date is required'),
-    type: zod_1.z.enum(['NATIONAL', 'OPTIONAL', 'COMPANY']).optional(),
+    type: zod_1.z.enum(['NATIONAL', 'FESTIVAL', 'OPTIONAL', 'COMPANY']).optional(),
+    description: zod_1.z.string().max(500).optional().or(zod_1.z.literal('')),
 });
 
 function toObjectId(value) {
@@ -448,13 +449,43 @@ const createHoliday = async (req, res, next) => {
         const year = date.getFullYear();
         const existing = await Leave_1.Holiday.findOne({ date, isActive: true });
         if (existing) throw new errorHandler_1.AppError('A holiday is already recorded for this date', 409, 'DUPLICATE');
-        const holiday = await Leave_1.Holiday.create({ name: data.name, date, type: data.type || 'NATIONAL', year, isActive: true });
+        const holiday = await Leave_1.Holiday.create({
+            name: data.name, date, type: data.type || 'NATIONAL', description: data.description || undefined, year, isActive: true,
+        });
         await auditService_1.auditService.log(req, { action: 'HOLIDAY_CREATED', module: 'LEAVE', recordId: holiday._id.toString(), recordLabel: holiday.name });
         res.status(201).json({ data: holiday });
     }
     catch (err) { next(err); }
 };
 exports.createHoliday = createHoliday;
+
+/** Edit a holiday's name/date/type/description. Mirrors createHoliday's date-collision guard when the date is being changed. */
+const updateHoliday = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        (0, helpers_1.assertObjectId)(id, 'holiday id');
+        const data = holidaySchema.partial().parse(req.body);
+        const holiday = await Leave_1.Holiday.findById(id);
+        if (!holiday) throw new errorHandler_1.AppError('Holiday not found', 404, 'NOT_FOUND');
+
+        if (data.date) {
+            const date = (0, helpers_1.startOfDay)(data.date);
+            const existing = await Leave_1.Holiday.findOne({ date, isActive: true, _id: { $ne: id } });
+            if (existing) throw new errorHandler_1.AppError('A holiday is already recorded for this date', 409, 'DUPLICATE');
+            holiday.date = date;
+            holiday.year = date.getFullYear();
+        }
+        if (data.name !== undefined) holiday.name = data.name;
+        if (data.type !== undefined) holiday.type = data.type;
+        if (data.description !== undefined) holiday.description = data.description || undefined;
+        await holiday.save();
+
+        await auditService_1.auditService.log(req, { action: 'HOLIDAY_UPDATED', module: 'LEAVE', recordId: id, recordLabel: holiday.name, newValue: data });
+        res.json({ data: holiday });
+    }
+    catch (err) { next(err); }
+};
+exports.updateHoliday = updateHoliday;
 
 const deleteHoliday = async (req, res, next) => {
     try {

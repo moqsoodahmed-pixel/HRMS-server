@@ -8,6 +8,7 @@
     "dev": "nodemon server.js",
     "seed": "node seed/seed.js",
     "migrate:rbac-roles": "node scripts/migrate-rbac-roles.js",
+    "migrate:onboarding-status": "node scripts/migrate-onboarding-status.js",
     "reset:demo-org": "node scripts/reset-demo-organization.js"
   },
   "dependencies": {
@@ -27,6 +28,7 @@
     "nodemailer": "^9.0.6",
     "pdfkit": "^0.14.0",
     "uuid": "^14.0.2",
+    "xlsx": "^0.18.5",
     "zod": "^3.22.4"
   },
   "devDependencies": {

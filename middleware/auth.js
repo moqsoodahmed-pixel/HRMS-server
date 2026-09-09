@@ -61,6 +61,49 @@ const authorize = (...roles) => {
 };
 exports.authorize = authorize;
 
+/**
+ * Blocks an EMPLOYEE-role account from operational modules (attendance, leave,
+ * payroll, documents, etc.) until their onboarding has been APPROVED by
+ * HR/Admin. Deliberately re-reads Employee.onboardingStatus from the database
+ * on every request rather than trusting anything on the JWT/request — the
+ * whole point is that a client cannot unlock itself by editing local state,
+ * cookies, or the request payload.
+ *
+ * Only ever gates the EMPLOYEE role. HR_ADMIN, every elevated role, and every
+ * other administrative/manager role pass straight through, matching the
+ * requirement that onboarding-lock never applies to admin/HR/founder access.
+ */
+const requireOnboardingApproved = () => {
+    return async (req, res, next) => {
+        if (!req.user) {
+            res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'Authentication required' } });
+            return;
+        }
+        if (req.user.role !== 'EMPLOYEE') {
+            next();
+            return;
+        }
+        try {
+            const { Employee } = require('../models/Employee');
+            const employee = await Employee.findOne({ user: req.user.userId }).select('onboardingStatus');
+            if (!employee || employee.onboardingStatus !== 'APPROVED') {
+                res.status(403).json({
+                    error: {
+                        code: 'ONBOARDING_INCOMPLETE',
+                        message: 'Complete your onboarding and wait for HR/Admin approval before accessing this module.',
+                    },
+                });
+                return;
+            }
+            next();
+        }
+        catch (err) {
+            next(err);
+        }
+    };
+};
+exports.requireOnboardingApproved = requireOnboardingApproved;
+
 const authorizeOwnerOrAdmin = (getUserId) => {
     return (req, res, next) => {
         if (!req.user) {

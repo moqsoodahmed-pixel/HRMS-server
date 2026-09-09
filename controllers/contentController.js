@@ -66,7 +66,7 @@ function targetsEmployee(announcement, employee) {
 const getAnnouncements = async (req, res, next) => {
     try {
         const { page, limit, skip } = (0, helpers_1.parsePagination)(req.query, 20);
-        const { search, priority, unreadOnly } = req.query;
+        const { search, priority, unreadOnly, status } = req.query;
         const isAdmin = CONTENT_ADMIN_ROLES.includes(req.user?.role);
 
         const query = {};
@@ -77,6 +77,10 @@ const getAnnouncements = async (req, res, next) => {
                 { $or: [{ publishDate: { $exists: false } }, { publishDate: null }, { publishDate: { $lte: new Date() } }] },
                 { $or: [{ expiryDate: { $exists: false } }, { expiryDate: null }, { expiryDate: { $gte: new Date() } }] },
             ];
+        } else if (status === 'ACTIVE') {
+            query.isActive = true;
+        } else if (status === 'INACTIVE') {
+            query.isActive = false;
         } else if (req.query.includeInactive !== 'true') {
             query.isActive = true;
         }

@@ -9,7 +9,11 @@ const Payroll_1 = require("../models/Payroll");
 const AssetOnboarding_1 = require("../models/AssetOnboarding");
 const PolicyAnnouncement_1 = require("../models/PolicyAnnouncement");
 const NotificationAudit_1 = require("../models/NotificationAudit");
+const { User } = require("../models/User");
 const { CompensationRequest } = require("../models/Payroll");
+const { AttendanceRequest } = require("../models/AttendanceRequest");
+const { EmployeeEditRequest } = require("../models/EmployeeEditRequest");
+const { ExitRequest } = require("../models/ExitRequest");
 const helpers_1 = require("../utils/helpers");
 const roles_1 = require("../utils/roles");
 
@@ -35,6 +39,23 @@ function daysUntilBirthday(dob, today) {
 
 const getDashboardStats = async (req, res, next) => {
     try {
+        // An EMPLOYEE whose onboarding is not yet approved gets a minimal,
+        // non-confidential payload — no attendance/payroll/performance data —
+        // instead of the full dashboard. Re-checked server-side on every call.
+        if (req.user?.role === 'EMPLOYEE') {
+            const self = await Employee_1.Employee.findOne({ user: req.user.userId })
+                .select('fullName employeeCode onboardingStatus onboardingStep onboardingRejectionReason');
+            if (!self || self.onboardingStatus !== 'APPROVED') {
+                res.json({
+                    data: {
+                        onboardingRequired: true,
+                        me: self || null,
+                    },
+                });
+                return;
+            }
+        }
+
         const now = new Date();
         const todayStart = (0, helpers_1.startOfDay)(now);
         const todayEnd = (0, helpers_1.endOfDay)(now);
@@ -46,13 +67,21 @@ const getDashboardStats = async (req, res, next) => {
         const recordScope = scope === undefined ? {} : { employee: scope === null ? { $in: [] } : scope };
         const canSeePayroll = PAYROLL_ROLES.includes(req.user?.role);
 
+        const canSeeWorkspaceInfo = roles_1.isElevated(req.user?.role);
+
         const [
-            totalEmployees, activeEmployees, inactiveEmployees, onLeaveEmployees,
+            totalEmployees, activeEmployees, attendanceEligibleEmployees, inactiveEmployees, onLeaveEmployees,
             probation, noticePeriod, newJoiners, pendingLeave, expiringDocs,
             attendanceToday, pendingDocs, assetCounts, announcements,
+            pendingOnboarding, pendingAttendanceRequests, pendingEditRequests, pendingExitRequests, earliestUser,
         ] = await Promise.all([
             Employee_1.Employee.countDocuments({ ...empScope, isArchived: false }),
             Employee_1.Employee.countDocuments({ ...empScope, status: 'ACTIVE', isArchived: false }),
+            // Same "who counts as staff today" definition attendanceController.getAttendanceStats
+            // already uses (status !== INACTIVE) — kept as its own field rather than reusing
+            // `activeEmployees` (status === ACTIVE only) so the attendance-rate denominator
+            // matches the same population the numerator (today's Attendance records) is drawn from.
+            Employee_1.Employee.countDocuments({ ...empScope, status: { $ne: 'INACTIVE' }, isArchived: false }),
             Employee_1.Employee.countDocuments({ ...empScope, status: 'INACTIVE', isArchived: false }),
             Employee_1.Employee.countDocuments({ ...empScope, status: 'ON_LEAVE', isArchived: false }),
             Employee_1.Employee.countDocuments({ ...empScope, status: 'PROBATION', isArchived: false }),
@@ -78,6 +107,16 @@ const getDashboardStats = async (req, res, next) => {
                 .sort({ createdAt: -1 })
                 .limit(20)
                 .lean(),
+            // Employee self-service onboarding submissions awaiting HR/Admin decision (see onboardingProfileController).
+            Employee_1.Employee.countDocuments({ ...empScope, onboardingStatus: 'SUBMITTED' }),
+            // The other pending-request queues added in later steps — all use the same
+            // status: 'PENDING' convention as leave requests above.
+            AttendanceRequest.countDocuments({ ...recordScope, status: 'PENDING' }),
+            EmployeeEditRequest.countDocuments({ ...recordScope, status: 'PENDING' }),
+            ExitRequest.countDocuments({ ...recordScope, status: 'PENDING' }),
+            // Earliest account on record stands in for "when this workspace started" — there is no
+            // multi-tenant/workspace model in this codebase, so this is the closest real signal.
+            canSeeWorkspaceInfo ? User.findOne({}).sort({ createdAt: 1 }).select('createdAt').lean() : null,
         ]);
 
         const attendanceByStatus = Object.fromEntries(attendanceToday.map((a) => [a._id, a.count]));
@@ -110,20 +149,28 @@ const getDashboardStats = async (req, res, next) => {
         // Payroll figures are only ever computed for roles allowed to see them.
         let payroll = null;
         if (canSeePayroll) {
-            const agg = await Payroll_1.Payslip.aggregate([
-                { $match: { month: now.getMonth() + 1, year: now.getFullYear() } },
-                {
-                    $group: {
-                        _id: null,
-                        count: { $sum: 1 },
-                        gross: { $sum: '$grossSalary' },
-                        net: { $sum: '$netSalary' },
-                        deductions: { $sum: '$totalDeductions' },
-                        paid: { $sum: { $cond: [{ $eq: ['$status', 'PAID'] }, 1, 0] } },
+            const [agg, activeStructures] = await Promise.all([
+                Payroll_1.Payslip.aggregate([
+                    { $match: { month: now.getMonth() + 1, year: now.getFullYear() } },
+                    {
+                        $group: {
+                            _id: null,
+                            count: { $sum: 1 },
+                            gross: { $sum: '$grossSalary' },
+                            net: { $sum: '$netSalary' },
+                            deductions: { $sum: '$totalDeductions' },
+                            paid: { $sum: { $cond: [{ $eq: ['$status', 'PAID'] }, 1, 0] } },
+                        },
                     },
-                },
+                ]),
+                Payroll_1.SalaryStructure.countDocuments({ isActive: true }),
             ]);
             const t = agg[0] || { count: 0, gross: 0, net: 0, deductions: 0, paid: 0 };
+            // "status" summarises the current payroll period for the dashboard card —
+            // real data throughout, never a fabricated figure. Salary calculation
+            // itself stays exactly where it already lived (buildPayslip/applySalaryChange);
+            // this only reads what already exists.
+            const status = t.count === 0 ? 'NOT_STARTED' : t.paid >= t.count ? 'COMPLETE' : 'IN_PROGRESS';
             payroll = {
                 month: now.getMonth() + 1,
                 year: now.getFullYear(),
@@ -132,6 +179,14 @@ const getDashboardStats = async (req, res, next) => {
                 netPayroll: t.net,
                 totalDeductions: t.deductions,
                 employeesPaid: t.paid,
+                status,
+                activeStructures,
+                pendingActions: Math.max(0, activeStructures - t.count),
+                // Placeholder shape for the external "XYZ" payroll integration this
+                // dashboard is being built to plug into — no such integration exists
+                // yet, so this is reported honestly as disconnected, not simulated.
+                integration: { provider: 'XYZ', connected: false, lastSyncAt: null, status: 'NOT_CONNECTED' },
+                errors: [],
             };
         }
 
@@ -152,6 +207,25 @@ const getDashboardStats = async (req, res, next) => {
         }
 
         const assetByStatus = Object.fromEntries(assetCounts.map((a) => [a._id, a.count]));
+
+        // This codebase has no multi-tenant/subscription/billing model — "workspace"
+        // here just means this single organization's installation. Company name
+        // comes from the real Settings › Organization record (OrgSettings, added
+        // in this step) when an admin has set one; tenant code still falls back to
+        // an env var; workspace age is real (earliest account on record);
+        // subscription is honestly reported as not configured rather than
+        // inventing a plan/expiry date.
+        let workspace = null;
+        if (canSeeWorkspaceInfo) {
+            const { OrgSettings } = require("../models/OrgSettings");
+            const orgSettings = await OrgSettings.findOne({ singletonKey: 'default' }).select('organization').lean();
+            workspace = {
+                tenantCode: process.env.TENANT_CODE || null,
+                companyName: orgSettings?.organization?.companyName || null,
+                createdAt: earliestUser?.createdAt || null,
+                subscription: { status: 'NOT_CONFIGURED', expiresAt: null },
+            };
+        }
 
         // Same audience rule as the Announcements page: admins see everything for
         // oversight, everyone else only sees what is actually addressed to them.
@@ -176,11 +250,20 @@ const getDashboardStats = async (req, res, next) => {
                     presentToday,
                     // Kept for older callers that read `todayAttendance`.
                     todayAttendance: presentToday,
-                    absentToday: Math.max(0, activeEmployees - presentToday),
+                    // Denominator matches the numerator's population (status !== INACTIVE,
+                    // the same definition attendanceController.getAttendanceStats uses) —
+                    // previously this compared against `activeEmployees` (status === ACTIVE
+                    // only), which could under-count the denominator and push the rate over 100%.
+                    attendanceEligibleEmployees,
+                    absentToday: Math.max(0, attendanceEligibleEmployees - presentToday),
                     lateToday: attendanceByStatus.LATE || 0,
                     totalAssets: assetCounts.reduce((sum, a) => sum + a.count, 0),
                     assignedAssets: assetByStatus.ASSIGNED || 0,
                     availableAssets: assetByStatus.AVAILABLE || 0,
+                    pendingOnboarding,
+                    pendingAttendanceRequests,
+                    pendingEditRequests,
+                    pendingExitRequests,
                 },
                 payroll,
                 pendingCompensationRequests,
@@ -190,6 +273,7 @@ const getDashboardStats = async (req, res, next) => {
                 monthlyJoiners,
                 announcements: visibleAnnouncements,
                 recentActivity,
+                workspace,
                 me: employee || null,
             },
         });

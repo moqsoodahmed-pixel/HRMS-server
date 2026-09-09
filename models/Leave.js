@@ -80,7 +80,11 @@ const leaveRequestSchema = new mongoose_1.Schema({
 const holidaySchema = new mongoose_1.Schema({
     name: { type: String, required: true },
     date: { type: Date, required: true },
-    type: { type: String, enum: ['NATIONAL', 'OPTIONAL', 'COMPANY'], default: 'NATIONAL' },
+    // FESTIVAL added alongside the original three — purely additive, existing
+    // NATIONAL/OPTIONAL/COMPANY holidays are unaffected.
+    type: { type: String, enum: ['NATIONAL', 'FESTIVAL', 'OPTIONAL', 'COMPANY'], default: 'NATIONAL' },
+    // Optional — older holiday records simply have none.
+    description: { type: String },
     isActive: { type: Boolean, default: true },
     year: { type: Number, required: true },
 }, { timestamps: true });

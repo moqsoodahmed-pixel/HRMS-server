@@ -4,15 +4,44 @@ exports.markAttendance = exports.getMyToday = exports.getAttendanceStats = expor
 const Attendance_1 = require("../models/Attendance");
 const Employee_1 = require("../models/Employee");
 const Leave_1 = require("../models/Leave");
+const { OrgSettings } = require("../models/OrgSettings");
 const auditService_1 = require("../services/auditService");
 const errorHandler_1 = require("../middleware/errorHandler");
 const helpers_1 = require("../utils/helpers");
 const zod_1 = require("zod");
+const telegramService = require("../services/telegramService");
 
-const WORK_START_HOUR = parseInt(process.env.WORK_START_HOUR || '9', 10);
-const WORK_START_MINUTE = parseInt(process.env.WORK_START_MINUTE || '30', 10);
-const WORK_END_HOUR = parseInt(process.env.WORK_END_HOUR || '18', 10);
-const WORK_END_MINUTE = parseInt(process.env.WORK_END_MINUTE || '30', 10);
+const DEFAULT_WORK_START_HOUR = parseInt(process.env.WORK_START_HOUR || '9', 10);
+const DEFAULT_WORK_START_MINUTE = parseInt(process.env.WORK_START_MINUTE || '30', 10);
+const DEFAULT_WORK_END_HOUR = parseInt(process.env.WORK_END_HOUR || '18', 10);
+const DEFAULT_WORK_END_MINUTE = parseInt(process.env.WORK_END_MINUTE || '30', 10);
+const DEFAULT_WINDOW = { startHour: DEFAULT_WORK_START_HOUR, startMinute: DEFAULT_WORK_START_MINUTE, endHour: DEFAULT_WORK_END_HOUR, endMinute: DEFAULT_WORK_END_MINUTE };
+
+function parseHHmm(value) {
+    if (!value) return null;
+    const [h, m] = String(value).split(':').map((n) => parseInt(n, 10));
+    return Number.isFinite(h) && Number.isFinite(m) ? { h, m } : null;
+}
+
+/**
+ * Live work-hours window — reads Settings › Attendance (OrgSettings) when an
+ * admin has configured it there, otherwise falls back to the original
+ * WORK_START_HOUR/... env vars exactly as before this step, so a deployment
+ * that has never touched Settings behaves identically to before.
+ */
+async function getWorkWindow() {
+    const settings = await OrgSettings.findOne({ singletonKey: 'default' }).select('attendance').lean();
+    const start = parseHHmm(settings?.attendance?.workStartTime);
+    const end = parseHHmm(settings?.attendance?.workEndTime);
+    return {
+        startHour: start ? start.h : DEFAULT_WINDOW.startHour,
+        startMinute: start ? start.m : DEFAULT_WINDOW.startMinute,
+        endHour: end ? end.h : DEFAULT_WINDOW.endHour,
+        endMinute: end ? end.m : DEFAULT_WINDOW.endMinute,
+        lateThresholdMinutes: settings?.attendance?.lateThresholdMinutes ?? 0,
+    };
+}
+exports.getWorkWindow = getWorkWindow;
 
 const STATUSES = ['PRESENT', 'ABSENT', 'LATE', 'HALF_DAY', 'WORK_FROM_HOME', 'HOLIDAY', 'WEEKEND', 'ON_LEAVE'];
 
@@ -33,14 +62,15 @@ const markSchema = zod_1.z.object({
     notes: zod_1.z.string().max(500).optional().or(zod_1.z.literal('')),
 });
 
-function workStartFor(date) {
+function workStartFor(date, win = DEFAULT_WINDOW) {
     const d = new Date(date);
-    d.setHours(WORK_START_HOUR, WORK_START_MINUTE, 0, 0);
+    d.setHours(win.startHour, win.startMinute, 0, 0);
+    if (win.lateThresholdMinutes) d.setMinutes(d.getMinutes() + win.lateThresholdMinutes);
     return d;
 }
-function workEndFor(date) {
+function workEndFor(date, win = DEFAULT_WINDOW) {
     const d = new Date(date);
-    d.setHours(WORK_END_HOUR, WORK_END_MINUTE, 0, 0);
+    d.setHours(win.endHour, win.endMinute, 0, 0);
     return d;
 }
 
@@ -54,9 +84,9 @@ function combineDateTime(day, value) {
     return d;
 }
 
-function recomputeDerivedFields(record) {
+function recomputeDerivedFields(record, win = DEFAULT_WINDOW) {
     if (record.checkIn) {
-        const start = workStartFor(record.date);
+        const start = workStartFor(record.date, win);
         record.isLate = record.checkIn > start;
         record.lateMinutes = record.isLate
             ? Math.floor((record.checkIn.getTime() - start.getTime()) / 60000)
@@ -66,7 +96,7 @@ function recomputeDerivedFields(record) {
         record.lateMinutes = 0;
     }
     if (record.checkIn && record.checkOut) {
-        const end = workEndFor(record.date);
+        const end = workEndFor(record.date, win);
         record.isEarlyExit = record.checkOut < end;
         record.earlyExitMinutes = record.isEarlyExit
             ? Math.floor((end.getTime() - record.checkOut.getTime()) / 60000)
@@ -77,11 +107,12 @@ function recomputeDerivedFields(record) {
     }
 }
 
-/** Employee ids matching a department / free-text search, or null when unfiltered. */
-async function employeeIdsFor({ department, search }) {
-    if (!department && !search) return null;
+/** Employee ids matching a department / designation / free-text search, or null when unfiltered. */
+async function employeeIdsFor({ department, designation, search }) {
+    if (!department && !designation && !search) return null;
     const q = { isArchived: false };
     if (department) q.department = department;
+    if (designation) q.designation = designation;
     if (search) {
         q.$or = [
             { fullName: (0, helpers_1.searchRegex)(search) },
@@ -112,7 +143,7 @@ function applyEmployeeFilter(query, scope, ids, employeeId) {
 const getAttendance = async (req, res, next) => {
     try {
         const { page, limit, skip } = (0, helpers_1.parsePagination)(req.query, 30);
-        const { employeeId, startDate, endDate, date, status, department, search } = req.query;
+        const { employeeId, startDate, endDate, date, status, department, designation, search } = req.query;
 
         const query = {};
         if (date) {
@@ -124,7 +155,7 @@ const getAttendance = async (req, res, next) => {
         if (status) query.status = status;
 
         const { scope } = await (0, helpers_1.resolveEmployeeScope)(req.user);
-        const ids = await employeeIdsFor({ department, search });
+        const ids = await employeeIdsFor({ department, designation, search });
         if (employeeId) (0, helpers_1.assertObjectId)(employeeId, 'employeeId');
         applyEmployeeFilter(query, scope, ids, employeeId);
 
@@ -155,7 +186,8 @@ const checkIn = async (req, res, next) => {
             return;
         }
         const checkInTime = new Date();
-        const start = workStartFor(checkInTime);
+        const win = await getWorkWindow();
+        const start = workStartFor(checkInTime, win);
         const isLate = checkInTime > start;
         const record = await Attendance_1.Attendance.findOneAndUpdate({ employee: emp._id, date: { $gte: todayStart } }, {
             employee: emp._id,
@@ -166,6 +198,10 @@ const checkIn = async (req, res, next) => {
             lateMinutes: isLate ? Math.floor((checkInTime.getTime() - start.getTime()) / 60000) : 0,
         }, { upsert: true, new: true, setDefaultsOnInsert: true });
         await auditService_1.auditService.log(req, { action: 'ATTENDANCE_CHECK_IN', module: 'ATTENDANCE', recordId: record._id.toString(), recordLabel: emp.fullName });
+
+        // Fire-and-forget Telegram notification to Founder/CEO
+        telegramService.notifyClockIn(emp, checkInTime, isLate, record.lateMinutes).catch(() => {});
+
         res.json({ data: record });
     }
     catch (err) { next(err); }
@@ -187,9 +223,19 @@ const checkOut = async (req, res, next) => {
             return;
         }
         record.checkOut = new Date();
-        recomputeDerivedFields(record);
+        recomputeDerivedFields(record, await getWorkWindow());
         await record.save();
         await auditService_1.auditService.log(req, { action: 'ATTENDANCE_CHECK_OUT', module: 'ATTENDANCE', recordId: record._id.toString(), recordLabel: emp.fullName });
+
+        // Fire-and-forget Telegram notification to Founder/CEO (only if clock-out alerts are enabled)
+        telegramService.notifyClockOut(
+            emp,
+            record.checkOut,
+            record.workHours,
+            record.isEarlyExit,
+            record.earlyExitMinutes
+        ).catch(() => {});
+
         res.json({ data: record });
     }
     catch (err) { next(err); }
@@ -219,7 +265,7 @@ const updateAttendance = async (req, res, next) => {
         record.editedBy = req.user?.userId;
         record.editedAt = new Date();
         record.editReason = data.editReason;
-        recomputeDerivedFields(record);
+        recomputeDerivedFields(record, await getWorkWindow());
         await record.save();
 
         await auditService_1.auditService.log(req, {
@@ -257,7 +303,7 @@ const markAttendance = async (req, res, next) => {
         record.editedBy = req.user?.userId;
         record.editedAt = new Date();
         record.editReason = 'Manual entry by administrator';
-        recomputeDerivedFields(record);
+        recomputeDerivedFields(record, await getWorkWindow());
         await record.save();
 
         await auditService_1.auditService.log(req, {
@@ -271,12 +317,25 @@ const markAttendance = async (req, res, next) => {
 };
 exports.markAttendance = markAttendance;
 
-/** Headline counts for one day, scoped to what the caller may see. */
+/**
+ * Headline counts, scoped to what the caller may see. Defaults to one day
+ * (?date=) but also accepts a range (?startDate=&endDate=, e.g. one week)
+ * for the Employee Attendance page's weekly summary cards — same query
+ * shape `getAttendance` already accepts, just aggregated here instead of
+ * paginated.
+ */
 const getAttendanceStats = async (req, res, next) => {
     try {
-        const day = req.query.date ? new Date(req.query.date) : new Date();
-        const from = (0, helpers_1.startOfDay)(day);
-        const to = (0, helpers_1.endOfDay)(day);
+        const hasRange = req.query.startDate || req.query.endDate;
+        let from, to;
+        if (hasRange) {
+            from = req.query.startDate ? (0, helpers_1.startOfDay)(req.query.startDate) : (0, helpers_1.startOfDay)(new Date());
+            to = req.query.endDate ? (0, helpers_1.endOfDay)(req.query.endDate) : (0, helpers_1.endOfDay)(new Date());
+        } else {
+            const day = req.query.date ? new Date(req.query.date) : new Date();
+            from = (0, helpers_1.startOfDay)(day);
+            to = (0, helpers_1.endOfDay)(day);
+        }
 
         const { scope } = await (0, helpers_1.resolveEmployeeScope)(req.user);
         const employeeFilter = {};
@@ -287,7 +346,7 @@ const getAttendanceStats = async (req, res, next) => {
             employeeFilter._id = clause;
         }
 
-        const [byStatus, totalEmployees, onLeave] = await Promise.all([
+        const [byStatus, totalEmployees, onLeave, hoursAgg] = await Promise.all([
             Attendance_1.Attendance.aggregate([
                 { $match: attendanceFilter },
                 { $group: { _id: '$status', count: { $sum: 1 } } },
@@ -299,25 +358,37 @@ const getAttendanceStats = async (req, res, next) => {
                 endDate: { $gte: from },
                 ...(scope !== undefined ? { employee: scope === null ? { $in: [] } : scope } : {}),
             }),
+            Attendance_1.Attendance.aggregate([
+                { $match: { ...attendanceFilter, workHours: { $ne: null, $gt: 0 } } },
+                { $group: { _id: null, avgHours: { $avg: '$workHours' }, count: { $sum: 1 } } },
+            ]),
         ]);
 
         const counts = Object.fromEntries(byStatus.map((s) => [s._id, s.count]));
         const present = (counts.PRESENT || 0) + (counts.LATE || 0) + (counts.WORK_FROM_HOME || 0) + (counts.HALF_DAY || 0);
         const marked = byStatus.reduce((sum, s) => sum + s.count, 0);
+        // Over a range, "expected" markings scale with the number of days in the window.
+        const days = hasRange ? Math.max(1, Math.round((to - from) / 86400000) + 1) : 1;
+        const expectedMarkings = totalEmployees * days;
+        const avgHours = hoursAgg[0]?.avgHours ?? null;
 
         res.json({
             data: {
                 date: from,
+                startDate: from,
+                endDate: to,
                 totalEmployees,
                 present,
                 late: counts.LATE || 0,
                 workFromHome: counts.WORK_FROM_HOME || 0,
                 halfDay: counts.HALF_DAY || 0,
                 onLeave: Math.max(onLeave, counts.ON_LEAVE || 0),
-                // Anyone without a record for the day counts as unaccounted-for/absent.
-                absent: (counts.ABSENT || 0) + Math.max(0, totalEmployees - marked),
-                notMarked: Math.max(0, totalEmployees - marked),
+                // Anyone without a record for the window counts as unaccounted-for/absent.
+                absent: (counts.ABSENT || 0) + Math.max(0, expectedMarkings - marked),
+                notMarked: Math.max(0, expectedMarkings - marked),
                 byStatus: counts,
+                avgHours: avgHours !== null ? Math.round(avgHours * 100) / 100 : null,
+                attendancePercent: expectedMarkings > 0 ? Math.min(100, Math.round((present / expectedMarkings) * 1000) / 10) : null,
             },
         });
     }
@@ -326,25 +397,24 @@ const getAttendanceStats = async (req, res, next) => {
 exports.getAttendanceStats = getAttendanceStats;
 
 /** The signed-in user's own record for today, used by the check-in/out widget. */
+function shiftLabelFor(win) {
+    return {
+        start: `${String(win.startHour).padStart(2, '0')}:${String(win.startMinute).padStart(2, '0')}`,
+        end: `${String(win.endHour).padStart(2, '0')}:${String(win.endMinute).padStart(2, '0')}`,
+    };
+}
+
 const getMyToday = async (req, res, next) => {
     try {
         const emp = await Employee_1.Employee.findOne({ user: req.user?.userId }).select('_id fullName employeeCode department designation');
+        const win = await getWorkWindow();
         if (!emp) {
-            res.json({ data: { employee: null, record: null, shift: { start: `${String(WORK_START_HOUR).padStart(2, '0')}:${String(WORK_START_MINUTE).padStart(2, '0')}`, end: `${String(WORK_END_HOUR).padStart(2, '0')}:${String(WORK_END_MINUTE).padStart(2, '0')}` } } });
+            res.json({ data: { employee: null, record: null, shift: shiftLabelFor(win) } });
             return;
         }
         const todayStart = (0, helpers_1.startOfDay)(new Date());
         const record = await Attendance_1.Attendance.findOne({ employee: emp._id, date: { $gte: todayStart } });
-        res.json({
-            data: {
-                employee: emp,
-                record,
-                shift: {
-                    start: `${String(WORK_START_HOUR).padStart(2, '0')}:${String(WORK_START_MINUTE).padStart(2, '0')}`,
-                    end: `${String(WORK_END_HOUR).padStart(2, '0')}:${String(WORK_END_MINUTE).padStart(2, '0')}`,
-                },
-            },
-        });
+        res.json({ data: { employee: emp, record, shift: shiftLabelFor(win) } });
     }
     catch (err) { next(err); }
 };

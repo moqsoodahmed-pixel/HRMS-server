@@ -416,6 +416,12 @@ const getPayrollSummary = async (req, res, next) => {
 
         const totals = agg[0] || { count: 0, gross: 0, deductions: 0, net: 0 };
         const paid = paidAgg[0] || { count: 0, net: 0 };
+        // "status" and "integration" mirror what dashboardController's admin
+        // overview already computes from this exact same data — surfaced here
+        // too so the actual Payroll page (not just the dashboard card) shows
+        // the payroll state clearly. No salary calculation logic changes;
+        // this only reads what buildPayslip/applySalaryChange already wrote.
+        const status = totals.count === 0 ? 'NOT_STARTED' : paid.count >= totals.count ? 'COMPLETE' : 'IN_PROGRESS';
         res.json({
             data: {
                 month, year,
@@ -429,6 +435,12 @@ const getPayrollSummary = async (req, res, next) => {
                 activeStructures,
                 activeEmployees,
                 employeesWithoutStructure: Math.max(0, activeEmployees - activeStructures),
+                status,
+                pendingActions: Math.max(0, activeStructures - totals.count),
+                // Placeholder shape for the external "XYZ" payroll integration —
+                // honestly reported as not connected; no such integration exists yet.
+                integration: { provider: 'XYZ', connected: false, lastSyncAt: null, status: 'NOT_CONNECTED' },
+                errors: [],
             },
         });
     }
