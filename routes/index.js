@@ -253,6 +253,7 @@ router.get('/leads', authenticate, requireOnboardingApproved(), leadController.g
 router.get('/leads/:id', authenticate, requireOnboardingApproved(), leadController.getLead);
 router.patch('/leads/:id/status', authenticate, requireOnboardingApproved(), leadController.updateLeadStatus);
 router.patch('/leads/:id/assign', authenticate, leadController.reassignLead);
+router.post('/leads/:id/reveal', authenticate, requireOnboardingApproved(), leadController.revealLead);
 
 // ─── Daily Reports ───────────────────────────────────────────────────────────
 router.get('/daily-reports/stats', authenticate, dailyReportController.getReportStats);

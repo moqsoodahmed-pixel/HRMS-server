@@ -15,6 +15,26 @@ function canManage(role) {
   return isElevated(role) || ["PROJECT_HEAD", "HR_ADMIN", "MANAGER"].includes(role);
 }
 
+/**
+ * Mask email and phone for EMPLOYEE (sales team) role.
+ * Email: show first 2 chars + *** + domain e.g. ra***@gmail.com
+ * Phone: show last 4 digits, rest masked e.g. ******7890
+ */
+function maskEmail(email) {
+  if (!email) return email;
+  const [local, domain] = email.split("@");
+  if (!domain) return "***";
+  return local.slice(0, 2) + "***@" + domain;
+}
+function maskPhone(phone) {
+  if (!phone) return phone;
+  const str = String(phone).replace(/\s/g, "");
+  return str.slice(0, -4).replace(/./g, "*") + str.slice(-4);
+}
+function maskLead(lead) {
+  return { ...lead, email: maskEmail(lead.email), phone: maskPhone(lead.phone) };
+}
+
 /** Strip BOM, normalize headers */
 function normalizeHeader(h) {
   return h.trim().toLowerCase().replace(/[\s\-]+/g, "_").replace(/[^a-z0-9_]/g, "");
@@ -303,7 +323,7 @@ const getLeads = async (req, res, next) => {
       Lead.countDocuments(query),
     ]);
 
-    res.json({ data: leads, meta: { total, page, limit, totalPages: Math.ceil(total / limit) } });
+    res.json({ data: req.user?.role === "EMPLOYEE" ? leads.map(maskLead) : leads, meta: { total, page, limit, totalPages: Math.ceil(total / limit) } });
   } catch (err) { next(err); }
 };
 
@@ -336,7 +356,7 @@ const getLead = async (req, res, next) => {
       }
     }
 
-    res.json({ data: lead });
+    res.json({ data: req.user?.role === "EMPLOYEE" ? maskLead(lead) : lead });
   } catch (err) { next(err); }
 };
 
@@ -577,4 +597,36 @@ const deleteBatch = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-module.exports = { uploadLeads, previewLeads, getLeads, getLead, updateLeadStatus, reassignLead, getLeadStats, getUploadBatches, deleteBatch };
+/**
+ * POST /api/leads/:id/reveal
+ * Returns unmasked email + phone for the assigned EMPLOYEE only.
+ * Only one lead can be "active" per user at a time — calling this
+ * cancels any previously active reveal for that user.
+ */
+const revealLead = async (req, res, next) => {
+  try {
+    assertObjectId(req.params.id, "lead id");
+
+    const lead = await Lead.findById(req.params.id)
+      .select("email phone assignedTo")
+      .populate("assignedTo", "_id")
+      .lean();
+
+    if (!lead) throw new AppError("Lead not found", 404, "NOT_FOUND");
+
+    // Only the assigned EMPLOYEE may reveal their own lead
+    if (req.user?.role === "EMPLOYEE") {
+      const { Employee } = require("../models/Employee");
+      const emp = await Employee.findOne({ user: req.user.userId }).select("_id").lean();
+      if (!emp || String(lead.assignedTo?._id) !== String(emp._id)) {
+        throw new AppError("Access denied", 403, "FORBIDDEN");
+      }
+    } else if (!canManage(req.user?.role)) {
+      throw new AppError("Forbidden", 403, "FORBIDDEN");
+    }
+
+    res.json({ data: { email: lead.email, phone: lead.phone } });
+  } catch (err) { next(err); }
+};
+
+module.exports = { uploadLeads, previewLeads, getLeads, getLead, updateLeadStatus, reassignLead, getLeadStats, getUploadBatches, deleteBatch, revealLead };

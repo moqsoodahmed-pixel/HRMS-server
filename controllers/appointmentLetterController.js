@@ -8,7 +8,9 @@ const fs = require("fs");
 const { execFileSync } = require("child_process");
 
 function canManage(role) {
-  return isElevated(role) || role === "HR_ADMIN";
+  // ELEVATED_ROLES (FOUNDER_CEO, CTO, SUPER_ADMIN) already included via isElevated()
+  // Also grant access to HR_ADMIN and PROJECT_HEAD as requested
+  return isElevated(role) || role === "HR_ADMIN" || role === "PROJECT_HEAD";
 }
 
 const LETTERHEAD_DIR = path.join(__dirname, "../uploads/letterhead");
@@ -147,6 +149,7 @@ const generatePDF = async (req, res, next) => {
       dateOfIssue:             letter.dateOfIssue   || new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" }),
       employeeFullName:        letter.employeeFullName  || letter.employee?.fullName  || "",
       employeeFirstName:       letter.employeeFirstName || letter.employee?.firstName || "",
+      employeeCode:            letter.employeeCode      || letter.employee?.employeeCode || "",
       designation:             letter.designation    || letter.employee?.designation  || "",
       joiningDate:             letter.joiningDate    || "",
       compensation:            letter.compensation   || "",

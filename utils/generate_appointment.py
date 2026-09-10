@@ -59,6 +59,9 @@ def _sibling(base, suffix):
 _FONT = 'Helvetica'
 _FONT_BOLD = 'Helvetica-Bold'
 
+
+
+
 _dv = _find_dejavu()
 if _dv and os.path.exists(_dv):
     try:
@@ -295,6 +298,7 @@ def build_story(f):
     co     = _esc(str(f.get('registeredCompanyName','DutyLaunch Solutions Private Limited')))
     emp    = _esc(str(f.get('employeeFullName','')))
     empf   = _esc(str(f.get('employeeFirstName','')))
+    empcode= _esc(str(f.get('employeeCode','')))
     desig  = _esc(str(f.get('designation','')))
     doj    = _esc(str(f.get('joiningDate','')))
     rm     = _esc(str(f.get('reportingManager','management/person')))
@@ -316,6 +320,8 @@ def build_story(f):
     s.append(sp(8))
     s.append(PL('<b>To,</b>'))
     s.append(PL(emp))
+    if empcode:
+        s.append(PL(empcode))
     s.append(PL(f'Subject: Appointment as {desig}'))
     s.append(sp(8))
     s.append(PL(f'Dear {empf or emp},'))
@@ -549,6 +555,7 @@ def build_story(f):
           f'and accept the terms and conditions of my employment with {co}.'),
         sp(10),
         PL(f'Employee Name: {emp}'),
+        sp(24),
         PL('Signature: ______________________________'),
         PL(f'Date: {dt}'),
     ]
@@ -559,6 +566,7 @@ def build_story(f):
             s.extend(block)
         else:
             s.append(block)
+        s.extend(block)
 
     return s
 
