@@ -21,6 +21,7 @@ const appointmentLetterSchema = new mongoose.Schema({
   compensation:                { type: String },
   compensationWords:           { type: String },
   incentivePercent:            { type: String, default: "15" },
+  includeIncentive:            { type: Boolean, default: true },
   // Duties (role-specific, editable list)
   duties:                      [{ type: String }],
   // Company

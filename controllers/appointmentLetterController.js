@@ -5,7 +5,7 @@ const { isElevated } = require("../utils/roles");
 const { parsePagination, assertObjectId } = require("../utils/helpers");
 const path = require("path");
 const fs = require("fs");
-const { execFileSync, execSync } = require("child_process");
+const { execFileSync } = require("child_process");
 
 function canManage(role) {
   return isElevated(role) || role === "HR_ADMIN";
@@ -19,23 +19,27 @@ const OUTPUT_DIR     = path.join(__dirname, "../uploads/appointment-letters");
   if (!fs.existsSync(d)) fs.mkdirSync(d, { recursive: true });
 });
 
-/** Find python3 executable across platforms */
+/** Find a Python 3 executable across platforms. Returns { cmd, baseArgs }
+ * split apart for execFileSync — e.g. Windows' "py -3" launcher is not
+ * itself an executable name, "py" is, with "-3" as a leading arg. */
 function findPython3() {
   const candidates = [
-    "python3",
-    "/usr/bin/python3",
-    "/usr/local/bin/python3",
-    "/opt/homebrew/bin/python3",     // macOS Apple Silicon Homebrew
-    "/usr/local/opt/python3/bin/python3",
-    "/Library/Developer/CommandLineTools/usr/bin/python3", // macOS Xcode tools
+    ["python3"],
+    ["/usr/bin/python3"],
+    ["/usr/local/bin/python3"],
+    ["/opt/homebrew/bin/python3"],     // macOS Apple Silicon Homebrew
+    ["/usr/local/opt/python3/bin/python3"],
+    ["/Library/Developer/CommandLineTools/usr/bin/python3"], // macOS Xcode tools
+    ["py", "-3"],     // Windows py launcher
+    ["python"],       // Windows python.org installer / most Windows environments
   ];
-  for (const p of candidates) {
+  for (const [cmd, ...baseArgs] of candidates) {
     try {
-      execSync(`${p} --version`, { stdio: "pipe" });
-      return p;
+      execFileSync(cmd, [...baseArgs, "--version"], { stdio: "pipe" });
+      return { cmd, baseArgs, shellCmd: [cmd, ...baseArgs].join(" ") };
     } catch (_) {}
   }
-  return "python3"; // fallback
+  return { cmd: "python3", baseArgs: [], shellCmd: "python3" }; // fallback
 }
 
 const PYTHON3 = findPython3();
@@ -115,7 +119,7 @@ const generatePDF = async (req, res, next) => {
 
     // Check Python is available
     try {
-      execSync(`${PYTHON3} --version`, { stdio: "pipe" });
+      execFileSync(PYTHON3.cmd, [...PYTHON3.baseArgs, "--version"], { stdio: "pipe" });
     } catch (e) {
       throw new AppError(
         `Python 3 not found. Please install Python 3 and run: pip3 install reportlab pillow`,
@@ -125,7 +129,7 @@ const generatePDF = async (req, res, next) => {
 
     // Check reportlab is installed
     try {
-      execSync(`${PYTHON3} -c "import reportlab, PIL"`, { stdio: "pipe" });
+      execFileSync(PYTHON3.cmd, [...PYTHON3.baseArgs, "-c", "import reportlab, PIL"], { stdio: "pipe" });
     } catch (e) {
       throw new AppError(
         `Required Python packages missing. Run: pip3 install reportlab pillow`,
@@ -155,6 +159,7 @@ const generatePDF = async (req, res, next) => {
       authorizedSignatoryDesignation: letter.authorizedSignatoryDesignation || "Founder and CEO",
       offerLetterDate:         letter.offerLetterDate     || "",
       offerLetterJoiningDate:  letter.offerLetterJoiningDate || "",
+      includeIncentive:        letter.includeIncentive !== false,
       duties:                  letter.duties          || [],
       outputPath:              outPath,
     };
@@ -164,7 +169,7 @@ const generatePDF = async (req, res, next) => {
 
     let pythonError = "";
     try {
-      execFileSync(PYTHON3, [GENERATOR_PY, tmpJson], {
+      execFileSync(PYTHON3.cmd, [...PYTHON3.baseArgs, GENERATOR_PY, tmpJson], {
         timeout: 60000,
         stdio: ["pipe", "pipe", "pipe"],
       });
@@ -209,30 +214,31 @@ function ensureLetterheadAssets() {
   const headerPath = path.join(LETTERHEAD_DIR, "header.png");
   const footerPath = path.join(LETTERHEAD_DIR, "footer.png");
 
-  if (fs.existsSync(headerPath) && fs.existsSync(footerPath)) return;
-
-  // Try to get base64 from the JS assets file the frontend uses
+  // Always re-extract from letterheadImages.js so design updates are reflected
+  // without needing to manually delete the files from uploads/letterhead/
   const assetsFile = path.join(__dirname, "../../HRMS-client/src/assets/letterheadImages.js");
-  if (!fs.existsSync(assetsFile)) {
-    console.warn("[appointment-letter] letterheadImages.js not found — letterhead images may be missing");
-    return;
-  }
+  if (fs.existsSync(assetsFile)) {
+    const content = fs.readFileSync(assetsFile, "utf8");
 
-  const content = fs.readFileSync(assetsFile, "utf8");
-
-  if (!fs.existsSync(headerPath)) {
-    const m = content.match(/LETTERHEAD_HEADER\s*=\s*"data:image\/png;base64,([^"]+)"/);
-    if (m) {
-      fs.writeFileSync(headerPath, Buffer.from(m[1], "base64"));
-      console.log("[appointment-letter] header.png extracted from letterheadImages.js");
+    const hdrMatch = content.match(/LETTERHEAD_HEADER\s*=\s*"data:image\/png;base64,([^"]+)"/);
+    if (hdrMatch) {
+      fs.writeFileSync(headerPath, Buffer.from(hdrMatch[1], "base64"));
+      console.log("[appointment-letter] header.png synced from letterheadImages.js");
+    } else if (!fs.existsSync(headerPath)) {
+      console.warn("[appointment-letter] LETTERHEAD_HEADER not found in letterheadImages.js");
     }
-  }
 
-  if (!fs.existsSync(footerPath)) {
-    const m = content.match(/LETTERHEAD_FOOTER\s*=\s*"data:image\/png;base64,([^"]+)"/);
-    if (m) {
-      fs.writeFileSync(footerPath, Buffer.from(m[1], "base64"));
-      console.log("[appointment-letter] footer.png extracted from letterheadImages.js");
+    const ftrMatch = content.match(/LETTERHEAD_FOOTER\s*=\s*"data:image\/png;base64,([^"]+)"/);
+    if (ftrMatch) {
+      fs.writeFileSync(footerPath, Buffer.from(ftrMatch[1], "base64"));
+      console.log("[appointment-letter] footer.png synced from letterheadImages.js");
+    } else if (!fs.existsSync(footerPath)) {
+      console.warn("[appointment-letter] LETTERHEAD_FOOTER not found in letterheadImages.js");
+    }
+  } else {
+    // letterheadImages.js not found — keep existing files if present
+    if (!fs.existsSync(headerPath) || !fs.existsSync(footerPath)) {
+      console.warn("[appointment-letter] letterheadImages.js not found and letterhead images missing — PDF header/footer will be blank");
     }
   }
 }
