@@ -6,7 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.storageService = void 0;
 const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
-const uuid_1 = require("uuid");
+const { randomUUID } = require("crypto");
 const UPLOAD_DIR = process.env.UPLOAD_DIR || 'uploads/private';
 function ensureDir(dir) {
     if (!fs_1.default.existsSync(dir)) {
@@ -18,7 +18,7 @@ exports.storageService = {
         const targetDir = path_1.default.join(UPLOAD_DIR, subDir);
         ensureDir(targetDir);
         const ext = path_1.default.extname(file.originalname);
-        const filename = `${(0, uuid_1.v4)()}${ext}`;
+        const filename = `${randomUUID()}${ext}`;
         const targetPath = path_1.default.join(targetDir, filename);
         fs_1.default.writeFileSync(targetPath, file.buffer);
         return path_1.default.join(subDir, filename).replace(/\\/g, '/');
