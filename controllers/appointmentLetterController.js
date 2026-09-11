@@ -129,14 +129,35 @@ const generatePDF = async (req, res, next) => {
       );
     }
 
-    // Check reportlab is installed
+    // Check reportlab + pillow — auto-install if missing (handles Render/Linux/macOS)
     try {
       execFileSync(PYTHON3.cmd, [...PYTHON3.baseArgs, "-c", "import reportlab, PIL"], { stdio: "pipe" });
     } catch (e) {
-      throw new AppError(
-        `Required Python packages missing. Run: pip3 install reportlab pillow`,
-        500, "MISSING_PACKAGES"
-      );
+      console.log("[appointment-letter] reportlab/pillow not found — installing...");
+      try {
+        // Try --break-system-packages first (required on newer Linux/Debian/Ubuntu/Render)
+        execFileSync(
+          PYTHON3.cmd,
+          [...PYTHON3.baseArgs, "-m", "pip", "install", "--break-system-packages", "--quiet", "reportlab", "pillow"],
+          { stdio: "pipe" }
+        );
+        console.log("[appointment-letter] reportlab + pillow installed successfully.");
+      } catch (e2) {
+        try {
+          // Fallback: without --break-system-packages (macOS / older Linux)
+          execFileSync(
+            PYTHON3.cmd,
+            [...PYTHON3.baseArgs, "-m", "pip", "install", "--quiet", "reportlab", "pillow"],
+            { stdio: "pipe" }
+          );
+          console.log("[appointment-letter] reportlab + pillow installed (fallback) successfully.");
+        } catch (e3) {
+          throw new AppError(
+            `Required Python packages missing and auto-install failed. Please run: pip3 install reportlab pillow`,
+            500, "MISSING_PACKAGES"
+          );
+        }
+      }
     }
 
     // Check letterhead assets exist — if not, create them from embedded data
