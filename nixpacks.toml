@@ -1,2 +1,5 @@
 [phases.setup]
-nixPkgs = ["python3", "python3Packages.pip"]
+aptPkgs = ["python3", "python3-pip", "python3-venv"]
+
+[phases.install]
+cmds = ["npm ci --omit=dev", "pip3 install reportlab pillow --break-system-packages || pip3 install reportlab pillow"]

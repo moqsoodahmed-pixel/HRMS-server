@@ -1,10 +1,8 @@
 "use strict";
 /**
  * install-python-deps.js
- * ──────────────────────
  * Ensures reportlab and pillow are installed before the server starts.
- * Called automatically via the "start" script in package.json.
- * Safe to run multiple times — pip skips already-installed packages.
+ * On Railway, Python is pre-installed via nixpacks.toml aptPkgs.
  */
 
 const { execFileSync } = require("child_process");
@@ -28,42 +26,6 @@ function findPython() {
   return null;
 }
 
-function installPackages(python) {
-  const packages = ["reportlab", "pillow"];
-  console.log(`[startup] Installing Python packages: ${packages.join(", ")} ...`);
-
-  // Try --break-system-packages first (required on Render/Ubuntu 24+)
-  try {
-    execFileSync(
-      python,
-      ["-m", "pip", "install", "--break-system-packages", "--quiet", ...packages],
-      { stdio: "inherit" }
-    );
-    console.log("[startup] ✅ Python packages installed (--break-system-packages).");
-    return;
-  } catch (_) {}
-
-  // Fallback without flag (macOS / older Linux)
-  try {
-    execFileSync(
-      python,
-      ["-m", "pip", "install", "--quiet", ...packages],
-      { stdio: "inherit" }
-    );
-    console.log("[startup] ✅ Python packages installed.");
-    return;
-  } catch (_) {}
-
-  // Try pip3 directly
-  try {
-    execFileSync("pip3", ["install", "--quiet", ...packages], { stdio: "inherit" });
-    console.log("[startup] ✅ Python packages installed via pip3.");
-    return;
-  } catch (_) {}
-
-  console.warn("[startup] ⚠️  Could not install Python packages automatically. PDF generation may fail.");
-}
-
 function checkPackages(python) {
   try {
     execFileSync(python, ["-c", "import reportlab, PIL"], { stdio: "pipe" });
@@ -73,12 +35,38 @@ function checkPackages(python) {
   }
 }
 
+function installPackages(python) {
+  const packages = ["reportlab", "pillow"];
+  console.log(`[startup] Installing Python packages: ${packages.join(", ")} ...`);
+
+  const attempts = [
+    [python, ["-m", "pip", "install", "--break-system-packages", "--quiet", ...packages]],
+    [python, ["-m", "pip", "install", "--quiet", ...packages]],
+    ["pip3", ["install", "--break-system-packages", "--quiet", ...packages]],
+    ["pip3", ["install", "--quiet", ...packages]],
+    ["pip", ["install", "--quiet", ...packages]],
+  ];
+
+  for (const [cmd, args] of attempts) {
+    try {
+      execFileSync(cmd, args, { stdio: "inherit" });
+      console.log("[startup] ✅ Python packages installed successfully.");
+      return true;
+    } catch (_) {}
+  }
+  return false;
+}
+
 const python = findPython();
 if (!python) {
   console.warn("[startup] ⚠️  Python 3 not found — PDF appointment letter generation will be unavailable.");
 } else {
+  console.log(`[startup] ✅ Python found: ${python}`);
   if (!checkPackages(python)) {
-    installPackages(python);
+    const ok = installPackages(python);
+    if (!ok) {
+      console.warn("[startup] ⚠️  Could not install Python packages. PDF generation may fail.");
+    }
   } else {
     console.log("[startup] ✅ Python packages (reportlab, pillow) already installed.");
   }
