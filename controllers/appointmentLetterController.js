@@ -238,32 +238,42 @@ function ensureLetterheadAssets() {
   const headerPath = path.join(LETTERHEAD_DIR, "header.png");
   const footerPath = path.join(LETTERHEAD_DIR, "footer.png");
 
-  // Always re-extract from letterheadImages.js so design updates are reflected
-  // without needing to manually delete the files from uploads/letterhead/
-  const assetsFile = path.join(__dirname, "../../HRMS-client/src/assets/letterheadImages.js");
-  if (fs.existsSync(assetsFile)) {
-    const content = fs.readFileSync(assetsFile, "utf8");
-
-    const hdrMatch = content.match(/LETTERHEAD_HEADER\s*=\s*"data:image\/png;base64,([^"]+)"/);
-    if (hdrMatch) {
-      fs.writeFileSync(headerPath, Buffer.from(hdrMatch[1], "base64"));
-      console.log("[appointment-letter] header.png synced from letterheadImages.js");
-    } else if (!fs.existsSync(headerPath)) {
-      console.warn("[appointment-letter] LETTERHEAD_HEADER not found in letterheadImages.js");
+  try {
+    // First try: load from server-side embedded assets (works on Railway/any deployment)
+    const serverAssets = path.join(__dirname, "../utils/letterheadAssets.js");
+    if (fs.existsSync(serverAssets)) {
+      const { LETTERHEAD_HEADER_B64, LETTERHEAD_FOOTER_B64 } = require(serverAssets);
+      if (LETTERHEAD_HEADER_B64) {
+        fs.writeFileSync(headerPath, Buffer.from(LETTERHEAD_HEADER_B64, "base64"));
+        console.log("[appointment-letter] header.png written from letterheadAssets.js");
+      }
+      if (LETTERHEAD_FOOTER_B64) {
+        fs.writeFileSync(footerPath, Buffer.from(LETTERHEAD_FOOTER_B64, "base64"));
+        console.log("[appointment-letter] footer.png written from letterheadAssets.js");
+      }
+      return;
     }
 
-    const ftrMatch = content.match(/LETTERHEAD_FOOTER\s*=\s*"data:image\/png;base64,([^"]+)"/);
-    if (ftrMatch) {
-      fs.writeFileSync(footerPath, Buffer.from(ftrMatch[1], "base64"));
-      console.log("[appointment-letter] footer.png synced from letterheadImages.js");
-    } else if (!fs.existsSync(footerPath)) {
-      console.warn("[appointment-letter] LETTERHEAD_FOOTER not found in letterheadImages.js");
+    // Fallback: try to read from HRMS-client letterheadImages.js (monorepo setup)
+    const clientAssets = path.join(__dirname, "../../HRMS-client/src/assets/letterheadImages.js");
+    if (fs.existsSync(clientAssets)) {
+      const content = fs.readFileSync(clientAssets, "utf8");
+      const hdrMatch = content.match(/LETTERHEAD_HEADER\s*=\s*"data:image\/png;base64,([^"]+)"/);
+      if (hdrMatch) {
+        fs.writeFileSync(headerPath, Buffer.from(hdrMatch[1], "base64"));
+        console.log("[appointment-letter] header.png synced from letterheadImages.js");
+      }
+      const ftrMatch = content.match(/LETTERHEAD_FOOTER\s*=\s*"data:image\/png;base64,([^"]+)"/);
+      if (ftrMatch) {
+        fs.writeFileSync(footerPath, Buffer.from(ftrMatch[1], "base64"));
+        console.log("[appointment-letter] footer.png synced from letterheadImages.js");
+      }
+      return;
     }
-  } else {
-    // letterheadImages.js not found — keep existing files if present
-    if (!fs.existsSync(headerPath) || !fs.existsSync(footerPath)) {
-      console.warn("[appointment-letter] letterheadImages.js not found and letterhead images missing — PDF header/footer will be blank");
-    }
+
+    console.warn("[appointment-letter] No letterhead asset source found — header/footer will be blank.");
+  } catch (err) {
+    console.error("[appointment-letter] Error writing letterhead assets:", err.message);
   }
 }
 
