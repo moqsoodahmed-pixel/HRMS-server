@@ -476,7 +476,7 @@ def build_story(f):
 
     if comp:
         sec('Compensation',
-            f'Your monthly compensation is \u20b9{comp}/- (Rupees {cwords} Only), inclusive of '
+            f'Your monthly compensation is Rs.{comp}/- (Rupees {cwords} Only), inclusive of '
             f'applicable Provident Fund (PF) and insurance contributions/benefits, wherever applicable '
             f'under the Company\u2019s policies and statutory requirements. Any applicable statutory '
             f'deductions or employer contributions will be dealt with in accordance with applicable '
@@ -586,7 +586,7 @@ def build_story(f):
     sec('Statutory Deductions and Benefits',
         f'Any statutory deductions, contributions or benefits applicable to your employment shall be '
         f'administered in accordance with applicable law and the Company\u2019s payroll policies. '
-        + (f'The stated monthly compensation of \u20b9{comp}/- is inclusive of applicable PF and '
+        + (f'The stated monthly compensation of Rs.{comp}/- is inclusive of applicable PF and '
            f'insurance components, wherever applicable, as stated in the Offer Letter.' if comp else
            'Applicable statutory deductions and benefits shall be communicated in writing.'))
 
