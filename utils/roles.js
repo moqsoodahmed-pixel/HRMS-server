@@ -47,7 +47,7 @@ const DEPARTMENT_SCOPED_ROLES = ['IT_HEAD'];
  */
 const TEAM_SCOPED_ROLES = ['MANAGER', 'PROJECT_HEAD'];
 
-const HR_ROLES = [...ELEVATED_ROLES, 'HR_ADMIN'];
+const HR_ROLES = [...ELEVATED_ROLES, 'HR_ADMIN', 'PROJECT_HEAD'];
 const HR_MANAGER_ROLES = [...HR_ROLES, ...TEAM_SCOPED_ROLES];
 const FINANCE_ROLES = [...ELEVATED_ROLES, 'FINANCE'];
 // View-only payroll access additionally includes DIRECTOR (read-only company

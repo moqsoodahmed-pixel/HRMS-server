@@ -182,10 +182,22 @@ const createEmployee = async (req, res, next) => {
         });
 
         const password = await bcryptjs_1.default.hash(process.env.SEED_EMPLOYEE_PASSWORD || 'Employee@123456', 12);
+
+        // Determine the role for the new user account.
+        // PROJECT_HEAD can only assign non-elevated roles (cannot promote to FOUNDER_CEO/CTO/SUPER_ADMIN).
+        // FOUNDER_CEO / CTO / HR_ADMIN can assign any valid role.
+        const { isElevated } = require('../utils/roles');
+        const requestedRole = data.role || 'EMPLOYEE';
+        const elevatedRoles = ['FOUNDER_CEO', 'CTO', 'SUPER_ADMIN'];
+        const callerRole = req.user?.role;
+        const assignedRole = (!isElevated(callerRole) && elevatedRoles.includes(requestedRole))
+          ? 'EMPLOYEE'   // PROJECT_HEAD tried to assign elevated role — cap it
+          : requestedRole;
+
         const user = await User_1.User.create({
             email: data.officialEmail.toLowerCase(),
             password,
-            role: 'EMPLOYEE',
+            role: assignedRole,
             employee: employee._id,
         });
         employee.user = user._id;
