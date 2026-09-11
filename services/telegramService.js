@@ -40,8 +40,8 @@ async function getTelegramConfig() {
 
   return {
     botToken: cfg.botToken || process.env.TELEGRAM_BOT_TOKEN || "",
-    chatId: cfg.notifyChatId || "",
-    enabled: cfg.enabled !== false, // default true if not explicitly false
+    chatId:   cfg.notifyChatId || process.env.TELEGRAM_CHAT_ID || "",
+    enabled:  cfg.enabled !== false, // default true if not explicitly false
   };
 }
 
