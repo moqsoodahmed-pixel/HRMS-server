@@ -566,7 +566,6 @@ def build_story(f):
             s.extend(block)
         else:
             s.append(block)
-        s.extend(block)
 
     return s
 
