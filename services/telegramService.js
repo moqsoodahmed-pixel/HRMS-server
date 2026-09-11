@@ -59,10 +59,11 @@ async function sendMessage(text) {
     if (!enabled) return;
     if (!botToken || !chatId) {
       console.warn(
-        "[TelegramService] Bot token or chat ID not configured — skipping notification."
+        `[TelegramService] Missing config — botToken: ${botToken ? 'SET' : 'MISSING'}, chatId: ${chatId ? 'SET (' + chatId + ')' : 'MISSING'} — skipping notification.`
       );
       return;
     }
+    console.log(`[TelegramService] Sending to chatId: ${chatId}`);
 
     const payload = JSON.stringify({
       chat_id: chatId,
