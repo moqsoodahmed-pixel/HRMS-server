@@ -272,6 +272,15 @@ router.get('/appointment-letters/:id', authenticate, appointmentLetterController
 router.patch('/appointment-letters/:id', authenticate, appointmentLetterController.updateLetter);
 router.post('/appointment-letters/:id/generate', authenticate, appointmentLetterController.generatePDF);
 router.get('/appointment-letters/:id/pdf', authenticate, appointmentLetterController.downloadPDF);
+// ── Documenso e-signing ──
+router.post('/appointment-letters/:id/send-for-signing', authenticate, appointmentLetterController.sendLetterForSigning);
+router.post('/appointment-letters/:id/cancel-signing', authenticate, appointmentLetterController.cancelSigning);
+// ── Manual status sync (Free plan workaround — no webhooks needed) ──
+// HR calls this to pull the latest signing status from Documenso on demand.
+router.get('/appointment-letters/:id/sync-status', authenticate, appointmentLetterController.syncSigningStatus);
+// ── Documenso Webhook — no authenticate middleware; Documenso calls this directly.
+// Secret verification is handled inside documensoWebhook() using DOCUMENSO_WEBHOOK_SECRET.
+router.post('/webhooks/documenso', appointmentLetterController.documensoWebhook);
 
 // ─── Reports ─────────────────────────────────────────────────────────────────
 router.get('/reports/employees', authenticate, authorize(...REPORTS), rc.getEmployeeReport);
