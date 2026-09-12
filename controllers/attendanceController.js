@@ -11,7 +11,7 @@ const helpers_1 = require("../utils/helpers");
 const zod_1 = require("zod");
 const telegramService = require("../services/telegramService");
 
-const DEFAULT_WORK_START_HOUR = parseInt(process.env.WORK_START_HOUR || '9', 10);
+const DEFAULT_WORK_START_HOUR = parseInt(process.env.WORK_START_HOUR || '10', 10);
 const DEFAULT_WORK_START_MINUTE = parseInt(process.env.WORK_START_MINUTE || '30', 10);
 const DEFAULT_WORK_END_HOUR = parseInt(process.env.WORK_END_HOUR || '18', 10);
 const DEFAULT_WORK_END_MINUTE = parseInt(process.env.WORK_END_MINUTE || '30', 10);
