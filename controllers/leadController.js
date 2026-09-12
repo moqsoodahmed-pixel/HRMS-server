@@ -68,18 +68,30 @@ function rowToLead(row, uploadedBy, uploadBatch, uploadBatchTimestamp) {
     return "";
   };
 
-  const name = get("name", "full_name", "fullname", "contact_name", "customer_name", "lead_name");
+  const name = get("name", "full_name", "fullname", "contact_name", "customer_name", "lead_name", "entity_name");
   if (!name) return null;
 
   const statusRaw = get("status", "lead_status", "stage").toUpperCase();
   const status = VALID_STATUSES.includes(statusRaw) ? statusRaw : "NEW";
 
+  // Clean phone — remove backticks, spaces, leading zeros issues
+  const rawPhone = get("phone", "mobile", "phone_number", "mobile_number", "contact", "contact_number",
+                       "director_mobile", "directormobile", "contact_mobile");
+  const phone = rawPhone.replace(/`/g, "").replace(/^\+?0+(?=\d{10})/, "").trim();
+
+  // Notes — combine NIC label + address if present
+  const nicLabel = get("nic_label", "niclabel", "industry", "sector");
+  const address = get("registered_address", "registeredaddress", "address");
+  const notes = get("notes", "note", "remarks", "comment", "comments") ||
+    [nicLabel, address].filter(Boolean).join(" | ");
+
   return {
     name,
-    phone: get("phone", "mobile", "phone_number", "mobile_number", "contact", "contact_number"),
+    phone: phone || "",
     email: get("email", "email_address", "mail"),
-    company: get("company", "company_name", "organization", "organisation", "firm"),
-    notes: get("notes", "note", "remarks", "comment", "comments"),
+    company: get("company", "company_name", "organization", "organisation", "firm",
+                 "entity_name", "entityname") || name,
+    notes,
     status,
     uploadedBy,
     uploadBatch,
@@ -217,8 +229,29 @@ async function parseFile(file) {
   }
   const workbook = XLSX.read(buffer, { type: "buffer" });
   const sheetName = workbook.SheetNames[0];
-  const csvText = XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName]);
-  return parseCSV(Buffer.from(csvText));
+  const ws = workbook.Sheets[sheetName];
+
+  // Convert to array of arrays to detect title rows
+  const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+
+  // Find the actual header row — first row where at least one cell is 'name' or 'entityId' etc.
+  let headerRowIdx = 0;
+  for (let i = 0; i < Math.min(rows.length, 5); i++) {
+    const cells = rows[i].map(c => String(c || "").toLowerCase().trim());
+    if (cells.some(c => c === "name" || c === "entityid" || c === "email" || c === "phone" || c === "company")) {
+      headerRowIdx = i;
+      break;
+    }
+  }
+
+  const headers = rows[headerRowIdx].map(normalizeHeader);
+  const dataRows = rows.slice(headerRowIdx + 1).filter(r => r.some(c => c !== ""));
+
+  return dataRows.map(row => {
+    const obj = {};
+    headers.forEach((h, i) => { obj[h] = String(row[i] ?? "").trim(); });
+    return obj;
+  });
 }
 
 /**
