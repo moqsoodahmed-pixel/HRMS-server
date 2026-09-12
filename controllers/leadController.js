@@ -121,50 +121,26 @@ async function distributeLeads(leads, uploadedBy, batchSize = 50) {
   const total = leads.length;
   const now = new Date();
 
-  // Track how many assigned per member
-  const assignedCount = salesTeam.map(() => 0);
-  let idx = 0;
-  let round = 1;
-  let positionInRound = 0;
-
+  // Simple one-by-one round-robin: lead 0 → member 0, lead 1 → member 1, lead 2 → member 0, etc.
+  // This guarantees equal (or near-equal) distribution regardless of batch size.
+  // e.g. 41 leads, 2 members → 21 to member 0, 20 to member 1
   for (let i = 0; i < total; i++) {
-    const memberIdx = idx % count;
+    const memberIdx = i % count;
     leads[i].assignedTo = salesTeam[memberIdx]._id;
     leads[i].assignedAt = now;
-    leads[i].assignmentRound = round;
-    leads[i].assignmentBatchSize = batchSize;
-    assignedCount[memberIdx]++;
-    positionInRound++;
-
-    if (positionInRound >= batchSize * count) {
-      round++;
-      positionInRound = 0;
-    }
-    idx++;
-    if (idx % count === 0 && positionInRound > 0) {
-      // continue round-robin
-    }
-  }
-
-  // Actually do proper round-based distribution
-  // Reset and redo properly
-  for (let i = 0; i < total; i++) {
-    const globalSlot = i;
-    const employeeSlot = Math.floor(globalSlot / batchSize) % count;
-    const roundNum = Math.floor(Math.floor(globalSlot / batchSize) / count) + 1;
-    leads[i].assignedTo = salesTeam[employeeSlot]._id;
-    leads[i].assignedAt = now;
-    leads[i].assignmentRound = roundNum;
+    leads[i].assignmentRound = Math.floor(i / count) + 1;
     leads[i].assignmentBatchSize = batchSize;
   }
 
-  const distribution = salesTeam.map((member, i) => ({
+  const distribution = salesTeam.map((member) => ({
     name: member.fullName,
     _id: member._id,
     assigned: leads.filter(l => String(l.assignedTo) === String(member._id)).length,
   }));
 
-  const note = `Distributed ${total} leads across ${count} sales employee(s) with ${batchSize} leads/employee/round.`;
+  const perPerson = Math.floor(total / count);
+  const extra = total % count;
+  const note = `Distributed ${total} leads across ${count} sales member(s) — ${perPerson} each${extra > 0 ? `, +1 for ${extra} member(s)` : ""}.`;
 
   return { leads, salesTeam: distribution, note };
 }
