@@ -93,9 +93,14 @@ HDR_H      = PAGE_W / HDR_ASPECT
 FTR_H      = PAGE_W / FTR_ASPECT
 ML         = 55.0
 MR         = 55.0
-SAFETY_GAP = 16.0
-BODY_TOP   = HDR_H + SAFETY_GAP
-BODY_BOT   = FTR_H + SAFETY_GAP
+
+# The footer image has ~19px of built-in top whitespace (6% of 313px height).
+# Subtracting that from BODY_BOT prevents a double-gap between body text and
+# the visible footer bar — the frame bottom sits just inside the blank band,
+# so text flows right up to where the coloured footer actually starts.
+_FTR_BLANK_TOP = (19 / 313) * FTR_H   # ~8.8pt blank at top of footer image
+BODY_TOP   = HDR_H + 8.0              # small clearance below header
+BODY_BOT   = FTR_H - _FTR_BLANK_TOP + 4.0   # flush with actual footer colour start
 CW         = PAGE_W - ML - MR
 
 # ── Styles ────────────────────────────────────────────────────────────────────
