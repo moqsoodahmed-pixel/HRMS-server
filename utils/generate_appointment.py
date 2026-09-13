@@ -12,7 +12,7 @@ from reportlab.lib import colors
 from reportlab.platypus import (
     BaseDocTemplate, Frame, PageTemplate,
     Paragraph, Spacer, HRFlowable, KeepTogether, ListFlowable, ListItem,
-    CondPageBreak,
+    PageBreak,
 )
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_JUSTIFY
 from reportlab.platypus.flowables import Flowable
@@ -22,23 +22,16 @@ from reportlab.pdfbase.ttfonts import TTFont
 import glob as _glob
 
 def _find_dejavu():
-    """Find DejaVuSans.ttf on Linux, macOS, or Windows."""
     candidates = [
-        # Linux (Debian/Ubuntu)
         '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-        # macOS — Homebrew font-dejavu
         '/opt/homebrew/share/fonts/dejavu-fonts-ttf/DejaVuSans.ttf',
         '/usr/local/share/fonts/DejaVuSans.ttf',
         '/opt/homebrew/share/fonts/DejaVuSans.ttf',
-        # macOS — system fonts
         '/Library/Fonts/DejaVuSans.ttf',
         '/System/Library/Fonts/DejaVuSans.ttf',
-        # macOS — user fonts
         os.path.expanduser('~/Library/Fonts/DejaVuSans.ttf'),
-        # Windows
         'C:/Windows/Fonts/DejaVuSans.ttf',
     ]
-    # Also glob common font dirs
     for pat in [
         '/usr/share/fonts/**/DejaVuSans.ttf',
         '/opt/homebrew/share/fonts/**/DejaVuSans.ttf',
@@ -53,14 +46,10 @@ def _find_dejavu():
     return None
 
 def _sibling(base, suffix):
-    """Replace DejaVuSans.ttf with DejaVuSans-Bold.ttf etc."""
     return base.replace('DejaVuSans.ttf', f'DejaVuSans{suffix}.ttf')
 
 _FONT = 'Helvetica'
 _FONT_BOLD = 'Helvetica-Bold'
-
-
-
 
 _dv = _find_dejavu()
 if _dv and os.path.exists(_dv):
@@ -76,11 +65,9 @@ if _dv and os.path.exists(_dv):
         _FONT = 'DocSans'
         _FONT_BOLD = 'DocSans-Bold'
     except Exception:
-        pass  # Fall back to Helvetica (₹ will render as box, rest is fine)
+        pass
 
-
-# ── A4 dimensions ─────────────────────────────────────────────────────────────
-PAGE_W, PAGE_HEIGHT = A4          # 595.28 x 841.89 pt  (210mm x 297mm)
+PAGE_W, PAGE_HEIGHT = A4
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SERVER_DIR  = os.path.dirname(SCRIPT_DIR)
@@ -88,8 +75,6 @@ ASSETS      = os.path.join(SERVER_DIR, 'uploads', 'letterhead')
 HEADER_PNG  = os.path.join(ASSETS, 'header.png')
 FOOTER_PNG  = os.path.join(ASSETS, 'footer.png')
 
-# ── Letterhead zones — derived from the actual PNG pixel dimensions so the ──
-# images are drawn at true aspect ratio (never stretched) at full page width.
 def _image_aspect(path, fallback):
     try:
         from PIL import Image
@@ -101,19 +86,19 @@ def _image_aspect(path, fallback):
         pass
     return fallback
 
-HDR_ASPECT = _image_aspect(HEADER_PNG, 4.9922)   # 1656x270 reference
-FTR_ASPECT = _image_aspect(FOOTER_PNG, 4.0831)   # 1656x380 reference
+HDR_ASPECT = _image_aspect(HEADER_PNG, 4.9922)
+FTR_ASPECT = _image_aspect(FOOTER_PNG, 4.0831)
 
-HDR_H     = PAGE_W / HDR_ASPECT   # pt — header height at full page width (~97pt)
-FTR_H     = PAGE_W / FTR_ASPECT   # pt — footer height at full page width (~137pt)
-ML        = 55.0   # left margin
-MR        = 55.0   # right margin
-SAFETY_GAP = 16.0   # extra clearance between body text and header/footer bands
-BODY_TOP  = HDR_H + SAFETY_GAP    # top of body frame from top-of-page
-BODY_BOT  = FTR_H + SAFETY_GAP    # bottom padding above footer
-CW        = PAGE_W - ML - MR  # usable content width
+HDR_H      = PAGE_W / HDR_ASPECT
+FTR_H      = PAGE_W / FTR_ASPECT
+ML         = 55.0
+MR         = 55.0
+SAFETY_GAP = 16.0
+BODY_TOP   = HDR_H + SAFETY_GAP
+BODY_BOT   = FTR_H + SAFETY_GAP
+CW         = PAGE_W - ML - MR
 
-# ── Styles matching reference typography ─────────────────────────────────────
+# ── Styles ────────────────────────────────────────────────────────────────────
 def mkS(name, **kw):
     base = dict(
         fontName=_FONT, fontSize=9.5, leading=14.5,
@@ -124,35 +109,33 @@ def mkS(name, **kw):
     return ParagraphStyle(name, **base)
 
 sBody   = mkS('body',   alignment=TA_JUSTIFY, spaceAfter=8)
-sBodyL  = mkS('bodyL',  alignment=TA_LEFT,    spaceAfter=8)
+sBodyL  = mkS('bodyL',  alignment=TA_LEFT,    spaceAfter=6)
 sHead   = mkS('head',   fontName=_FONT_BOLD, fontSize=9.5,
-               spaceBefore=10, spaceAfter=4, keepWithNext=1)
+               spaceBefore=8, spaceAfter=3, keepWithNext=1)
 sTitle  = mkS('title',  fontName=_FONT_BOLD, fontSize=13,
-               alignment=TA_CENTER, spaceAfter=14, spaceBefore=4)
+               alignment=TA_CENTER, spaceAfter=12, spaceBefore=4)
 sBullet = mkS('bullet', alignment=TA_JUSTIFY,
                leftIndent=14, firstLineIndent=0, spaceAfter=3)
 
 def P(text, style=sBody):    return Paragraph(text, style)
 def PL(text, style=sBodyL):  return Paragraph(text, style)
-def PHead(text):                 return Paragraph(text, sHead)
+def PHead(text):             return Paragraph(text, sHead)
 def sp(n):                   return Spacer(1, n)
 
-# ── Page background (header + footer images on every page) ────────────────────
+# ── Page background ───────────────────────────────────────────────────────────
 def draw_page_background(canv, doc):
     canv.saveState()
-    # Header image — anchored to top of page
     if os.path.exists(HEADER_PNG):
         canv.drawImage(HEADER_PNG, 0, PAGE_HEIGHT - HDR_H,
                        width=PAGE_W, height=HDR_H,
                        preserveAspectRatio=True, anchor='n', mask='auto')
-    # Footer image — anchored to bottom of page
     if os.path.exists(FOOTER_PNG):
         canv.drawImage(FOOTER_PNG, 0, 0,
                        width=PAGE_W, height=FTR_H,
                        preserveAspectRatio=True, anchor='s', mask='auto')
     canv.restoreState()
 
-# ── Build story ────────────────────────────────────────────────────────────────
+# ── Role duties ───────────────────────────────────────────────────────────────
 DEFAULT_DUTIES = [
     'Managing technical projects from requirement gathering through successful delivery.',
     'Leading software development, integration and implementation activities.',
@@ -167,15 +150,6 @@ DEFAULT_DUTIES = [
     'Maintaining appropriate technical documentation, source-control practices and project records.',
     'Ensuring timely completion and delivery of assigned work.',
     'Performing other reasonable duties and responsibilities assigned by the Company from time to time.',
-]
-
-ROLES = [
-    'Sales Executive',
-    'Business Development (BD) Executive',
-    'Digital Marketing Executive',
-    'HR Executive',
-    'Operations Executive',
-    'Accounts Executive',
 ]
 
 ROLE_DUTIES = {
@@ -257,12 +231,12 @@ ROLE_DUTIES = {
         'Performing other reasonable duties and responsibilities assigned by the Company from time to time.',
     ],
     'Project Head': [
-        'Leading and managing assigned projects from initiation through delivery, ensuring timelines, scope and quality targets are met.',
-        'Defining project plans, milestones, resource requirements and success criteria in coordination with stakeholders.',
-        'Coordinating cross-functional teams including developers, designers, QA and operations to deliver project objectives.',
-        'Monitoring project progress, identifying risks and implementing mitigation strategies proactively.',
+        'Leading and managing assigned projects from initiation through delivery.',
+        'Defining project plans, milestones, resource requirements and success criteria.',
+        'Coordinating cross-functional teams including developers, designers, QA and operations.',
+        'Monitoring project progress, identifying risks and implementing mitigation strategies.',
         'Conducting regular project review meetings and providing status updates to senior management.',
-        'Managing client communication, expectation setting and escalation handling for assigned projects.',
+        'Managing client communication, expectation setting and escalation handling.',
         'Ensuring adherence to Company processes, coding standards, documentation and quality benchmarks.',
         'Supporting recruitment, onboarding and performance evaluation of project team members.',
         'Driving continuous improvement in delivery processes, tools and team capabilities.',
@@ -274,7 +248,7 @@ ROLE_DUTIES = {
         'Leading, mentoring and scaling the engineering team across all technical disciplines.',
         'Making key technology decisions including stack selection, infrastructure, security and scalability.',
         'Overseeing the design, development, deployment and maintenance of all Company products and platforms.',
-        'Collaborating with the founding team and business stakeholders on product strategy and technical feasibility.',
+        'Collaborating with the founding team and business stakeholders on product strategy.',
         'Establishing and enforcing engineering best practices, code quality standards and DevOps processes.',
         'Managing technology budgets, vendor relationships and third-party integrations.',
         'Driving innovation through R&D, prototyping and evaluation of emerging technologies.',
@@ -331,7 +305,7 @@ ROLE_DUTIES = {
         'Managing cross-functional teams and ensuring alignment between business units.',
         'Driving operational efficiency, process improvement and cost optimisation.',
         'Monitoring business KPIs, preparing management reports and presenting to the board.',
-        'Overseeing HR, finance, technology and client delivery functions in coordination with respective heads.',
+        'Overseeing HR, finance, technology and client delivery functions.',
         'Managing key vendor, partner and client relationships at the operational level.',
         'Ensuring regulatory compliance, risk management and governance across operations.',
         'Supporting fundraising, investor relations and strategic business development activities.',
@@ -362,37 +336,19 @@ ROLE_DUTIES = {
         'Performing other reasonable duties and responsibilities as required by the role.',
     ],
 }
+
 def get_duties_for_role(designation, custom_duties=None):
     if custom_duties:
-        # Preserve the client's exact order and wording — no resorting, no
-        # role-based filtering/fallback. Only drop entries that are blank or
-        # whitespace-only (e.g. an "+ Add Duty" row the user never filled in),
-        # which would otherwise render as an empty, misaligned bullet.
         cleaned = [str(d).strip() for d in custom_duties if str(d).strip()]
         if cleaned:
             return cleaned
-    # Try to match known roles
     d = designation.lower() if designation else ''
     for role_key, duties in ROLE_DUTIES.items():
         if role_key.lower() in d:
             return duties
     return DEFAULT_DUTIES
 
-def _keep_or_flow(flowables, usable_h):
-    """KeepTogether(flowables) normally, but if the group is taller than a
-    whole usable page frame, return it as a plain flowing list so it can
-    split across pages instead of overflowing."""
-    total_h = 0.0
-    for fl in flowables:
-        try:
-            _, h = fl.wrap(CW, usable_h)
-        except Exception:
-            h = 0.0
-        total_h += h
-    if total_h > usable_h:
-        return flowables
-    return KeepTogether(flowables)
-
+# ── Story builder ─────────────────────────────────────────────────────────────
 def build_story(f):
     from xml.sax.saxutils import escape as _esc
     duties = [_esc(str(d)) for d in get_duties_for_role(f.get('designation',''), f.get('duties'))]
@@ -414,22 +370,27 @@ def build_story(f):
     ol_doj = _esc(str(f.get('offerLetterJoiningDate','')))
 
     s = []
-    s.append(sp(16))
+    s.append(sp(14))
 
     # Title
     s.append(P('<b>APPOINTMENT LETTER</b>', sTitle))
 
-    # Opening block
-    s.append(PL(f'<b>Date:</b> {dt}'))
-    s.append(sp(8))
-    s.append(PL('<b>To,</b>'))
-    s.append(PL(emp))
+    # Opening block — kept together so it never orphans
+    opening = [
+        PL(f'<b>Date:</b> {dt}'),
+        sp(6),
+        PL('<b>To,</b>'),
+        PL(emp),
+    ]
     if empcode:
-        s.append(PL(empcode))
-    s.append(PL(f'Subject: Appointment as {desig}'))
-    s.append(sp(8))
-    s.append(PL(f'Dear {empf or emp},'))
-    s.append(sp(6))
+        opening.append(PL(empcode))
+    opening += [
+        PL(f'Subject: Appointment as {desig}'),
+        sp(6),
+        PL(f'Dear {empf or emp},'),
+        sp(4),
+    ]
+    s.append(KeepTogether(opening))
 
     intro = (f'We are pleased to confirm your appointment with {co} (the \u201cCompany\u201d) as a {desig}. '
              f'This Appointment Letter records the terms and conditions of your employment')
@@ -441,24 +402,18 @@ def build_story(f):
         intro += '.'
     intro += f' Your actual date of joining and commencement of employment is {doj}.'
     s.append(P(intro))
+    s.append(sp(4))
 
-    # ── Sections ─────────────────────────────────────────────────────────────
-    # Auto-numbered so sections always run 1..N with no gaps, whether or not
-    # the (optional) incentive section is included.
+    # ── Section helpers ───────────────────────────────────────────────────────
     _n = [0]
     def next_n():
         _n[0] += 1
         return _n[0]
-    def sec(title, body):
-        s.append(PHead(f'{next_n()}. {title}'))
-        s.append(P(body))
 
-    def sec_nb(title, body):
-        """Same as sec() but wrapped in KeepTogether so heading+body never split,
-        and preceded by enough space to push it to the next page if it won't fit."""
+    def sec(title, body):
+        """Normal section — heading kept with first line of body."""
         n = next_n()
         s.append(KeepTogether([
-            sp(8),
             PHead(f'{n}. {title}'),
             P(body),
         ]))
@@ -498,21 +453,21 @@ def build_story(f):
             f'and payment cycle. The Company reserves the right to determine eligibility and calculation '
             f'methodology in accordance with its applicable policy.')
 
-    # Heading + intro line + first bullet are kept as one atomic unit so the
-    # heading can never be stranded at the bottom of a page with its body
-    # (or first bullet) cut off / landing in the footer safety buffer.
-    s.append(CondPageBreak(100))
-    duties_head = [
-        PHead(f'{next_n()}. Key Duties and Responsibilities'),
+    # ── Key Duties — heading + intro + first bullet kept together, rest flow naturally ──
+    n_duties = next_n()
+    duties_anchor = [
+        PHead(f'{n_duties}. Key Duties and Responsibilities'),
         P('Your responsibilities will include, but will not be limited to:'),
     ]
     if duties:
-        duties_head.append(P(f'\u2022\u00a0 {duties[0]}', sBullet))
-    s.append(KeepTogether(duties_head))
+        duties_anchor.append(P(f'\u2022\u00a0 {duties[0]}', sBullet))
+    s.append(KeepTogether(duties_anchor))
+    # Remaining bullets flow naturally — no forced page breaks, no CondPageBreak
     for duty in duties[1:]:
         s.append(P(f'\u2022\u00a0 {duty}', sBullet))
     s.append(sp(4))
 
+    # ── Remaining sections — all flow naturally, heading kept with its body ──
     sec('Working Hours, Location and Work Requirements',
         'You shall follow the working hours, attendance requirements, work location, remote/hybrid '
         'arrangements, meeting schedules and other operational requirements communicated by the Company '
@@ -535,7 +490,7 @@ def build_story(f):
         'unauthorised person during or after employment. Company information shall be accessed and used '
         'only for legitimate Company purposes and in accordance with authorised access controls.')
 
-    sec_nb('Intellectual Property and Work Product',
+    sec('Intellectual Property and Work Product',
         'All software, source code, scripts, documentation, designs, databases, technical solutions, '
         'processes, concepts, inventions, improvements, materials, configurations and other work product '
         'created, developed or substantially contributed to by you in the course of your employment or '
@@ -590,7 +545,7 @@ def build_story(f):
            f'insurance components, wherever applicable, as stated in the Offer Letter.' if comp else
            'Applicable statutory deductions and benefits shall be communicated in writing.'))
 
-    sec_nb('Verification and Documentation',
+    sec('Verification and Documentation',
         'Your appointment is subject to submission and verification of documents and information '
         'reasonably required by the Company for employment, payroll, statutory and compliance purposes. '
         'If any information or document submitted by you is found to be materially false, misleading '
@@ -633,12 +588,21 @@ def build_story(f):
         f'By signing below, you acknowledge that you have read, understood and accepted the terms of '
         f'this Appointment Letter and confirm your joining with the Company with effect from {doj}.')
 
-    # ── Signature block ──────────────────────────────────────────────────────
-    # Each party's block is kept together as a logical unit so labels/values/
-    # underscores never split awkwardly; the two blocks themselves may flow
-    # across a page break, and if a single block is taller than one usable
-    # frame it is allowed to split rather than overflow off the page.
-    from reportlab.platypus import PageBreak
+    # ── Signature block — always starts on a new page ─────────────────────────
+    usable_h = PAGE_HEIGHT - BODY_TOP - BODY_BOT
+
+    def _keep_or_flow(flowables):
+        total_h = 0.0
+        for fl in flowables:
+            try:
+                _, h = fl.wrap(CW, usable_h)
+            except Exception:
+                h = 0.0
+            total_h += h
+        if total_h > usable_h:
+            return flowables
+        return KeepTogether(flowables)
+
     employer_block = [
         PageBreak(),
         sp(16),
@@ -663,9 +627,8 @@ def build_story(f):
         PL('Signature: ______________________________'),
         PL(f'Date: {dt}'),
     ]
-    usable_h = PAGE_HEIGHT - BODY_TOP - BODY_BOT
-    for block in (_keep_or_flow(employer_block, usable_h),
-                  _keep_or_flow(employee_block, usable_h)):
+
+    for block in (_keep_or_flow(employer_block), _keep_or_flow(employee_block)):
         if isinstance(block, list):
             s.extend(block)
         else:
@@ -673,14 +636,15 @@ def build_story(f):
 
     return s
 
+
 def generate(f, out_path):
     buf = io.BytesIO()
 
     frame = Frame(
-        ML,              # x
-        BODY_BOT,        # y from bottom
-        CW,              # width
-        PAGE_HEIGHT - BODY_TOP - BODY_BOT,  # height
+        ML,
+        BODY_BOT,
+        CW,
+        PAGE_HEIGHT - BODY_TOP - BODY_BOT,
         leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0,
     )
 
@@ -699,6 +663,7 @@ def generate(f, out_path):
     buf.seek(0)
     with open(out_path, 'wb') as fp:
         fp.write(buf.read())
+
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
