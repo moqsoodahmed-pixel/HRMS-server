@@ -11,6 +11,7 @@
  * 2. The Founder/CEO starts a chat with the bot (or adds it to a group/channel).
  * 3. The chat_id is stored in OrgSettings (telegram.notifyChatId).
  * 4. Every time an employee clocks in, this service fires a message to that chat.
+ * 5. When an employee submits a daily report, a notification is also sent.
  *
  * Environment variables (add to .env)
  * ─────────────────────────────────────
@@ -46,11 +47,11 @@ async function getTelegramConfig() {
 }
 
 /**
- * Sends a plain-text (Markdown v2) message to the configured chat.
+ * Sends a plain-text (HTML) message to the configured chat.
  * Errors are caught and logged but never bubble up — a Telegram failure
  * should never break a check-in response.
  *
- * @param {string} text  – The message text (Markdown supported)
+ * @param {string} text  – The message text (HTML supported)
  */
 async function sendMessage(text) {
   try {
@@ -201,4 +202,59 @@ async function notifyClockOut(
   await sendMessage(message);
 }
 
-module.exports = { notifyClockIn, notifyClockOut, sendMessage };
+/**
+ * Formats and sends a Daily Report Submitted notification to the Founder/CEO.
+ *
+ * @param {object} employee   – Mongoose Employee document (with fullName, employeeCode, department, designation)
+ * @param {object} report     – Mongoose DailyReport document
+ */
+async function notifyDailyReportSubmitted(employee, report) {
+  const submittedAt = (report.submittedAt || new Date()).toLocaleTimeString("en-IN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+    timeZone: process.env.TZ || "Asia/Kolkata",
+  });
+
+  const reportDate = new Date(report.date).toLocaleDateString("en-IN", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    timeZone: process.env.TZ || "Asia/Kolkata",
+  });
+
+  // Truncate long text fields to keep message readable in Telegram
+  const truncate = (text, maxLen = 200) => {
+    if (!text) return "—";
+    return text.length > maxLen ? text.substring(0, maxLen) + "..." : text;
+  };
+
+  const hoursLabel = report.hoursWorked != null ? `${report.hoursWorked} hrs` : "—";
+
+  const message =
+    `📋 <b>Daily Report Submitted</b>\n\n` +
+    `👤 <b>Name:</b> ${employee.fullName}\n` +
+    `🪪 <b>Employee Code:</b> ${employee.employeeCode}\n` +
+    `🏢 <b>Department:</b> ${employee.department}\n` +
+    `💼 <b>Designation:</b> ${employee.designation}\n` +
+    `📅 <b>Report Date:</b> ${reportDate}\n` +
+    `🕐 <b>Submitted At:</b> ${submittedAt}\n` +
+    `⏱️ <b>Hours Worked:</b> ${hoursLabel}\n\n` +
+    `📝 <b>Work Summary:</b>\n${truncate(report.workSummary)}\n\n` +
+    `✅ <b>Tasks Completed:</b>\n${truncate(report.tasksCompleted)}\n\n` +
+    `🔄 <b>Tasks In Progress:</b>\n${truncate(report.tasksInProgress)}\n\n` +
+    `🚧 <b>Blockers:</b>\n${truncate(report.blockers)}\n\n` +
+    `📌 <b>Next Day Plan:</b>\n${truncate(report.nextDayPlan)}\n`;
+
+  // Only include additional notes if present
+  if (report.additionalNotes) {
+    const notesLine = `\n🗒️ <b>Additional Notes:</b>\n${truncate(report.additionalNotes)}\n`;
+    await sendMessage(message + notesLine);
+  } else {
+    await sendMessage(message);
+  }
+}
+
+module.exports = { notifyClockIn, notifyClockOut, notifyDailyReportSubmitted, sendMessage };

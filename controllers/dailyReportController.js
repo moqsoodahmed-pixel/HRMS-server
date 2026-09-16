@@ -3,6 +3,7 @@ const { DailyReport } = require("../models/DailyReport");
 const { AppError } = require("../middleware/errorHandler");
 const { isElevated } = require("../utils/roles");
 const { parsePagination, assertObjectId, startOfDay, endOfDay } = require("../utils/helpers");
+const { notifyDailyReportSubmitted } = require("../services/telegramService");
 
 const MANAGEMENT_ROLES = ["FOUNDER_CEO", "CTO", "SUPER_ADMIN", "PROJECT_HEAD", "MANAGER", "HR_ADMIN"];
 
@@ -98,7 +99,7 @@ const submitReport = async (req, res, next) => {
     report.submittedAt = new Date();
     await report.save();
 
-    // Send notification to management
+    // ── In-app notifications to management ──────────────────────────────────
     try {
       const { User } = require("../models/User");
       const { Notification } = require("../models/NotificationAudit");
@@ -121,6 +122,20 @@ const submitReport = async (req, res, next) => {
         );
       }
     } catch (_) {}
+
+    // ── Telegram notification ────────────────────────────────────────────────
+    try {
+      const empDoc = await Employee.findById(emp._id)
+        .select("fullName employeeCode department designation")
+        .lean();
+
+      if (empDoc) {
+        await notifyDailyReportSubmitted(empDoc, report);
+      }
+    } catch (telegramErr) {
+      // Telegram failure must never break the submit response
+      console.error("[dailyReportController] Telegram notify failed:", telegramErr.message);
+    }
 
     res.json({ data: report });
   } catch (err) { next(err); }
