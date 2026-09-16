@@ -3,29 +3,24 @@
 /**
  * telegramService.js
  * ─────────────────
- * Sends Telegram messages via the Bot API (no extra library needed — pure HTTPS).
+ * Two separate bots/chats:
  *
- * OrgSettings fields (stored in DB, editable via Settings page)
- * ──────────────────────────────────────────────────────────────
- *   telegram.botToken      – overrides env var (optional)
- *   telegram.notifyChatId  – the Founder/CEO's Telegram chat ID (required)
- *   telegram.enabled       – boolean, master on/off switch
+ * 1. Clock-In / Clock-Out bot  →  TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID
+ *    (also readable from OrgSettings.telegram.botToken / notifyChatId)
  *
- * Environment variables (.env fallback)
- * ─────────────────────────────────────
- *   TELEGRAM_BOT_TOKEN=<your-bot-token-from-BotFather>
- *   TELEGRAM_CHAT_ID=<your-chat-id>
+ * 2. Daily Report bot          →  TELEGRAM_DAILY_REPORT_BOT_TOKEN + TELEGRAM_DAILY_REPORT_CHAT_ID
+ *    (dedicated bot & group, completely separate from clock-in/out)
  */
 
 const https = require("https");
 const { OrgSettings } = require("../models/OrgSettings");
 
+// ─── Config resolvers ─────────────────────────────────────────────────────────
+
 /**
- * Resolves the active Telegram config.
- * NOTE: botToken has `select: false` in OrgSettings schema, so we must
- * explicitly select it with +botToken.
+ * Config for Clock-In / Clock-Out bot (existing bot, from OrgSettings or env)
  */
-async function getTelegramConfig() {
+async function getAttendanceConfig() {
   const settings = await OrgSettings.findOne({ singletonKey: "default" })
     .select("+telegram.botToken telegram.notifyChatId telegram.enabled")
     .lean();
@@ -40,17 +35,24 @@ async function getTelegramConfig() {
 }
 
 /**
- * Core send function — sends an HTML-formatted message to the configured chat.
- * Errors are caught and logged but never bubble up.
+ * Config for Daily Report bot (new dedicated bot, from env only)
  */
-async function sendMessage(text) {
-  try {
-    const { botToken, chatId, enabled } = await getTelegramConfig();
+function getDailyReportConfig() {
+  return {
+    botToken: process.env.TELEGRAM_DAILY_REPORT_BOT_TOKEN || "",
+    chatId:   process.env.TELEGRAM_DAILY_REPORT_CHAT_ID || "",
+    enabled:  true,
+  };
+}
 
-    if (!enabled) {
-      console.log("[TelegramService] Notifications disabled — skipping.");
-      return;
-    }
+// ─── Core sender ──────────────────────────────────────────────────────────────
+
+/**
+ * Sends an HTML-formatted message using the given bot token and chat ID.
+ * Errors are caught and logged — never bubble up to crash the caller.
+ */
+async function sendTelegramMessage(botToken, chatId, text) {
+  try {
     if (!botToken || !chatId) {
       console.warn(
         `[TelegramService] Missing config — botToken: ${botToken ? "SET" : "MISSING"}, chatId: ${chatId ? "SET (" + chatId + ")" : "MISSING"} — skipping.`
@@ -66,7 +68,7 @@ async function sendMessage(text) {
       parse_mode: "HTML",
     });
 
-    await new Promise((resolve, reject) => {
+    await new Promise((resolve) => {
       const req = https.request(
         {
           hostname: "api.telegram.org",
@@ -97,7 +99,7 @@ async function sendMessage(text) {
       );
       req.on("error", (err) => {
         console.error("[TelegramService] Request error:", err.message);
-        resolve(); // resolve so we don't crash the caller
+        resolve();
       });
       req.write(payload);
       req.end();
@@ -107,11 +109,18 @@ async function sendMessage(text) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Notification helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Legacy wrapper (used by sendMessage callers if any) ─────────────────────
+async function sendMessage(text) {
+  const { botToken, chatId, enabled } = await getAttendanceConfig();
+  if (!enabled) { console.log("[TelegramService] Attendance notifications disabled."); return; }
+  await sendTelegramMessage(botToken, chatId, text);
+}
 
+// ─── Clock-In notification ────────────────────────────────────────────────────
 async function notifyClockIn(employee, checkInTime, isLate, lateMinutes) {
+  const { botToken, chatId, enabled } = await getAttendanceConfig();
+  if (!enabled) return;
+
   const timeStr = checkInTime.toLocaleTimeString("en-IN", {
     hour: "2-digit", minute: "2-digit", second: "2-digit",
     hour12: true, timeZone: process.env.TZ || "Asia/Kolkata",
@@ -134,10 +143,14 @@ async function notifyClockIn(employee, checkInTime, isLate, lateMinutes) {
     `🕐 <b>Clock-In Time:</b> ${timeStr}\n` +
     `📊 <b>Status:</b> ${statusLabel}\n`;
 
-  await sendMessage(message);
+  await sendTelegramMessage(botToken, chatId, message);
 }
 
+// ─── Clock-Out notification ───────────────────────────────────────────────────
 async function notifyClockOut(employee, checkOutTime, workHours, isEarlyExit, earlyExitMinutes) {
+  const { botToken, chatId, enabled } = await getAttendanceConfig();
+  if (!enabled) return;
+
   const timeStr = checkOutTime.toLocaleTimeString("en-IN", {
     hour: "2-digit", minute: "2-digit", second: "2-digit",
     hour12: true, timeZone: process.env.TZ || "Asia/Kolkata",
@@ -162,16 +175,16 @@ async function notifyClockOut(employee, checkOutTime, workHours, isEarlyExit, ea
     `⏱️ <b>Total Work Hours:</b> ${hoursLabel}\n` +
     `📊 <b>Status:</b> ${statusLabel}\n`;
 
-  await sendMessage(message);
+  await sendTelegramMessage(botToken, chatId, message);
 }
 
-/**
- * Sends a Daily Report Submitted notification.
- *
- * @param {object} employee  – { fullName, employeeCode, department, designation }
- * @param {object} report    – DailyReport document
- */
+// ─── Daily Report notification (separate bot & group) ────────────────────────
 async function notifyDailyReportSubmitted(employee, report) {
+  // Uses the DEDICATED daily report bot — completely separate from clock-in/out
+  const { botToken, chatId, enabled } = getDailyReportConfig();
+
+  if (!enabled) return;
+
   const submittedAt = new Date(report.submittedAt || Date.now()).toLocaleTimeString("en-IN", {
     hour: "2-digit", minute: "2-digit", second: "2-digit",
     hour12: true, timeZone: process.env.TZ || "Asia/Kolkata",
@@ -208,7 +221,8 @@ async function notifyDailyReportSubmitted(employee, report) {
     message += `\n🗒️ <b>Additional Notes:</b>\n${truncate(report.additionalNotes)}\n`;
   }
 
-  await sendMessage(message);
+  console.log(`[TelegramService] Sending Daily Report notification via dedicated bot to group: ${chatId}`);
+  await sendTelegramMessage(botToken, chatId, message);
 }
 
 module.exports = { notifyClockIn, notifyClockOut, notifyDailyReportSubmitted, sendMessage };
