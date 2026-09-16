@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getFilterOptions = exports.importEmployees = exports.uploadPhoto = exports.archiveEmployee = exports.updateEmployee = exports.createEmployee = exports.getEmployee = exports.getEmployees = void 0;
+exports.getFilterOptions = exports.importEmployees = exports.uploadPhoto = exports.archiveEmployee = exports.deleteEmployee = exports.updateEmployee = exports.createEmployee = exports.getEmployee = exports.getEmployees = void 0;
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const Employee_1 = require("../models/Employee");
 const User_1 = require("../models/User");
@@ -49,12 +49,15 @@ const employeeSchema = zod_1.z.object({
     manager: zod_1.z.string().optional().or(zod_1.z.literal('')),
     // fullName is computed server-side; accept and ignore it.
     fullName: zod_1.z.string().optional(),
+    // password is only accepted on create; ignored on update.
+    password: zod_1.z.string().min(8, 'Password must be at least 8 characters').optional(),
 });
 
 /** Turns '' into undefined and date strings into Dates. */
 function normalise(data) {
     const out = { ...data };
     delete out.fullName;
+    delete out.password;
     DATE_FIELDS.forEach((f) => {
         if (f in out) out[f] = out[f] ? new Date(out[f]) : undefined;
     });
@@ -181,7 +184,8 @@ const createEmployee = async (req, res, next) => {
             fullName: buildFullName(data.firstName, data.lastName),
         });
 
-        const password = await bcryptjs_1.default.hash(process.env.SEED_EMPLOYEE_PASSWORD || 'Employee@123456', 12);
+        const rawPassword = data.password || process.env.SEED_EMPLOYEE_PASSWORD || 'Employee@123456';
+        const password = await bcryptjs_1.default.hash(rawPassword, 12);
 
         // Determine the role for the new user account.
         // PROJECT_HEAD can only assign non-elevated roles (cannot promote to FOUNDER_CEO/CTO/SUPER_ADMIN).
@@ -324,6 +328,40 @@ const archiveEmployee = async (req, res, next) => {
     catch (err) { next(err); }
 };
 exports.archiveEmployee = archiveEmployee;
+
+const deleteEmployee = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        (0, helpers_1.assertObjectId)(id, 'employee id');
+        const employee = await Employee_1.Employee.findById(id);
+        if (!employee) throw new errorHandler_1.AppError('Employee not found', 404, 'NOT_FOUND');
+
+        const reports = await Employee_1.Employee.countDocuments({ manager: id, isArchived: false });
+        if (reports > 0) {
+            throw new errorHandler_1.AppError(`Reassign ${reports} direct report(s) before deleting this employee`, 400, 'HAS_REPORTS');
+        }
+
+        // Delete the linked User account first
+        if (employee.user) {
+            await User_1.User.findByIdAndDelete(employee.user);
+        }
+
+        const fullName = employee.fullName;
+        const empCode = employee.employeeCode;
+        await Employee_1.Employee.findByIdAndDelete(id);
+
+        await auditService_1.auditService.log(req, {
+            action: 'EMPLOYEE_DELETED',
+            module: 'EMPLOYEES',
+            recordId: id,
+            recordLabel: fullName,
+            newValue: { employeeCode: empCode },
+        });
+        res.json({ message: 'Employee permanently deleted' });
+    }
+    catch (err) { next(err); }
+};
+exports.deleteEmployee = deleteEmployee;
 
 const uploadPhoto = async (req, res, next) => {
     try {
