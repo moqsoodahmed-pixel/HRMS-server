@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getFilterOptions = exports.importEmployees = exports.uploadPhoto = exports.archiveEmployee = exports.deleteEmployee = exports.updateEmployee = exports.createEmployee = exports.getEmployee = exports.getEmployees = void 0;
+exports.getFilterOptions = exports.importEmployees = exports.uploadPhoto = exports.archiveEmployee = exports.deleteEmployee = exports.changeEmployeePassword = exports.updateEmployee = exports.createEmployee = exports.getEmployee = exports.getEmployees = void 0;
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const Employee_1 = require("../models/Employee");
 const User_1 = require("../models/User");
@@ -362,6 +362,33 @@ const deleteEmployee = async (req, res, next) => {
     catch (err) { next(err); }
 };
 exports.deleteEmployee = deleteEmployee;
+
+const changeEmployeePassword = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        (0, helpers_1.assertObjectId)(id, 'employee id');
+        const { newPassword } = req.body;
+        if (!newPassword || newPassword.length < 8) {
+            throw new errorHandler_1.AppError('Password must be at least 8 characters', 400, 'VALIDATION');
+        }
+        const employee = await Employee_1.Employee.findById(id);
+        if (!employee) throw new errorHandler_1.AppError('Employee not found', 404, 'NOT_FOUND');
+        if (!employee.user) throw new errorHandler_1.AppError('This employee has no login account', 400, 'NO_USER');
+
+        const hashed = await bcryptjs_1.default.hash(newPassword, 12);
+        await User_1.User.findByIdAndUpdate(employee.user, { password: hashed });
+
+        await auditService_1.auditService.log(req, {
+            action: 'EMPLOYEE_PASSWORD_CHANGED',
+            module: 'EMPLOYEES',
+            recordId: employee._id.toString(),
+            recordLabel: employee.fullName,
+        });
+        res.json({ message: 'Password updated successfully' });
+    }
+    catch (err) { next(err); }
+};
+exports.changeEmployeePassword = changeEmployeePassword;
 
 const uploadPhoto = async (req, res, next) => {
     try {

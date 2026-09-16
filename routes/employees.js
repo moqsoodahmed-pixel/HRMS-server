@@ -32,6 +32,8 @@ router.patch('/:id', authorize(...HR), employeeController_1.updateEmployee);
 router.post('/:id/archive', authorize(...HR), employeeController_1.archiveEmployee);
 // PATCH is accepted too — older clients call archive that way.
 router.patch('/:id/archive', authorize(...HR), employeeController_1.archiveEmployee);
+// Change password — HR_ADMIN, PROJECT_HEAD, and elevated roles.
+router.patch('/:id/password', authorize(...DELETE_ROLES), employeeController_1.changeEmployeePassword);
 // Permanent delete — restricted to elevated roles (FOUNDER_CEO / CTO) and HR_ADMIN only.
 const { ELEVATED_ROLES } = require('../utils/roles');
 const DELETE_ROLES = [...ELEVATED_ROLES, 'HR_ADMIN', 'PROJECT_HEAD'];
