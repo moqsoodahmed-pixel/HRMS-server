@@ -219,7 +219,8 @@ const checkIn = async (req, res, next) => {
         await auditService_1.auditService.log(req, { action: 'ATTENDANCE_CHECK_IN', module: 'ATTENDANCE', recordId: record._id.toString(), recordLabel: emp.fullName });
 
         // Fire-and-forget Telegram notification to Founder/CEO
-        telegramService.notifyClockIn(emp, checkInTime, isLate, record.lateMinutes).catch(() => {});
+        telegramService.notifyClockIn(emp, checkInTime, isLate, record.lateMinutes)
+            .catch((e) => console.error('[Attendance] Clock-in Telegram notify failed:', e?.message || e));
 
         res.json({ data: record });
     }
@@ -253,7 +254,7 @@ const checkOut = async (req, res, next) => {
             record.workHours,
             record.isEarlyExit,
             record.earlyExitMinutes
-        ).catch(() => {});
+        ).catch((e) => console.error('[Attendance] Clock-out Telegram notify failed:', e?.message || e));
 
         res.json({ data: record });
     }

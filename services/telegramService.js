@@ -27,11 +27,24 @@ async function getAttendanceConfig() {
 
   const cfg = settings?.telegram || {};
 
-  return {
-    botToken: cfg.botToken || process.env.TELEGRAM_BOT_TOKEN || "",
-    chatId:   cfg.notifyChatId || process.env.TELEGRAM_CHAT_ID || "",
-    enabled:  cfg.enabled !== false,
-  };
+  const botToken = cfg.botToken || process.env.TELEGRAM_BOT_TOKEN || "";
+  const chatId   = cfg.notifyChatId || process.env.TELEGRAM_CHAT_ID || "";
+
+  // Notifications are ON whenever we have working credentials, UNLESS an admin
+  // has EXPLICITLY turned them off in Settings.
+  //
+  // We can only treat OrgSettings.telegram.enabled as an explicit "off" when
+  // Telegram was actually configured through the UI (a bot token or chat id was
+  // saved there). Otherwise a brand-new OrgSettings document — which the app
+  // auto-creates with `enabled: false` by schema default — would silently
+  // suppress the env-configured clock-in/out notifications. That default-false
+  // flag was the bug: env creds were correct but never used.
+  const configuredInUi = Boolean(cfg.botToken || cfg.notifyChatId);
+  const enabled = configuredInUi
+    ? cfg.enabled === true          // UI-configured: honor the explicit toggle
+    : Boolean(botToken && chatId);  // env-configured: on as long as creds exist
+
+  return { botToken, chatId, enabled };
 }
 
 /**

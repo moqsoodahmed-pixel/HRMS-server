@@ -21,10 +21,13 @@ const orgSettingsSchema = new mongoose.Schema({
         defaultNoticePeriodDays: { type: Number },
     },
     telegram: {
-        enabled: { type: Boolean, default: false },
+        // Default ON: when Telegram creds come from env, an auto-created settings
+        // doc must not silently disable clock-in/out alerts. Admins can still turn
+        // this off explicitly from the Settings UI.
+        enabled: { type: Boolean, default: true },
         botToken: { type: String, select: false },
         notifyChatId: { type: String },
-        notifyClockOut: { type: Boolean, default: false },
+        notifyClockOut: { type: Boolean, default: true },
     },
     // Lead management settings
     leads: {
