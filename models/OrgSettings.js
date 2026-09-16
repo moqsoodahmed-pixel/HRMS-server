@@ -15,6 +15,7 @@ const orgSettingsSchema = new mongoose.Schema({
         workStartTime: { type: String },
         workEndTime: { type: String },
         lateThresholdMinutes: { type: Number },
+        breakDurationMinutes: { type: Number, default: 60 }, // 1-hour lunch break deducted from gross hours
     },
     exit: {
         defaultNoticePeriodDays: { type: Number },

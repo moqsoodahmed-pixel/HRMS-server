@@ -39,6 +39,7 @@ async function getWorkWindow() {
         endHour: end ? end.h : DEFAULT_WINDOW.endHour,
         endMinute: end ? end.m : DEFAULT_WINDOW.endMinute,
         lateThresholdMinutes: settings?.attendance?.lateThresholdMinutes ?? 0,
+        breakDurationMinutes: settings?.attendance?.breakDurationMinutes ?? 60, // 1 hr default break
     };
 }
 exports.getWorkWindow = getWorkWindow;
@@ -85,6 +86,8 @@ function combineDateTime(day, value) {
 }
 
 function recomputeDerivedFields(record, win = DEFAULT_WINDOW) {
+    const orgBreakMinutes = win.breakDurationMinutes ?? 60;
+
     if (record.checkIn) {
         const start = workStartFor(record.date, win);
         record.isLate = record.checkIn > start;
@@ -101,9 +104,25 @@ function recomputeDerivedFields(record, win = DEFAULT_WINDOW) {
         record.earlyExitMinutes = record.isEarlyExit
             ? Math.floor((end.getTime() - record.checkOut.getTime()) / 60000)
             : 0;
-        record.workHours = Math.round(((record.checkOut.getTime() - record.checkIn.getTime()) / 3600000) * 100) / 100;
+        // Gross hours: checkIn → checkOut
+        const grossMs = record.checkOut.getTime() - record.checkIn.getTime();
+        record.workHours = Math.round((grossMs / 3600000) * 100) / 100;
+
+        // Actual break taken (from breakStart→breakEnd), capped at orgBreakMinutes
+        let actualBreakMinutes = 0;
+        if (record.breakStart && record.breakEnd && record.breakEnd > record.breakStart) {
+            actualBreakMinutes = Math.floor((record.breakEnd.getTime() - record.breakStart.getTime()) / 60000);
+        }
+        // If employee never manually used break buttons, deduct the org default break
+        const breakDeductMinutes = (record.breakStart) ? Math.min(actualBreakMinutes, orgBreakMinutes) : orgBreakMinutes;
+        record.breakDurationMinutes = breakDeductMinutes;
+
+        // Net working hours = gross − break
+        const netMs = Math.max(0, grossMs - breakDeductMinutes * 60000);
+        record.netWorkHours = Math.round((netMs / 3600000) * 100) / 100;
     } else {
         record.workHours = record.checkIn ? record.workHours : undefined;
+        record.netWorkHours = undefined;
     }
 }
 
@@ -241,6 +260,62 @@ const checkOut = async (req, res, next) => {
     catch (err) { next(err); }
 };
 exports.checkOut = checkOut;
+
+/** Employee starts their lunch / rest break for the day. */
+const breakIn = async (req, res, next) => {
+    try {
+        const emp = await Employee_1.Employee.findOne({ user: req.user?.userId });
+        if (!emp) throw new errorHandler_1.AppError('No employee profile is linked to your account', 404, 'NO_EMPLOYEE_PROFILE');
+        const todayStart = (0, helpers_1.startOfDay)(new Date());
+        const record = await Attendance_1.Attendance.findOne({ employee: emp._id, date: { $gte: todayStart } });
+        if (!record?.checkIn) {
+            res.status(400).json({ error: { code: 'NOT_CHECKED_IN', message: 'You have not checked in today' } });
+            return;
+        }
+        if (record.checkOut) {
+            res.status(400).json({ error: { code: 'ALREADY_CHECKED_OUT', message: 'You have already checked out' } });
+            return;
+        }
+        if (record.breakStart && !record.breakEnd) {
+            res.status(400).json({ error: { code: 'BREAK_ALREADY_STARTED', message: 'Break is already in progress' } });
+            return;
+        }
+        if (record.breakStart && record.breakEnd) {
+            res.status(400).json({ error: { code: 'BREAK_ALREADY_TAKEN', message: 'You have already taken your break for today' } });
+            return;
+        }
+        record.breakStart = new Date();
+        await record.save();
+        await auditService_1.auditService.log(req, { action: 'ATTENDANCE_BREAK_START', module: 'ATTENDANCE', recordId: record._id.toString(), recordLabel: emp.fullName });
+        res.json({ data: record });
+    }
+    catch (err) { next(err); }
+};
+exports.breakIn = breakIn;
+
+/** Employee ends their lunch / rest break. */
+const breakOut = async (req, res, next) => {
+    try {
+        const emp = await Employee_1.Employee.findOne({ user: req.user?.userId });
+        if (!emp) throw new errorHandler_1.AppError('No employee profile is linked to your account', 404, 'NO_EMPLOYEE_PROFILE');
+        const todayStart = (0, helpers_1.startOfDay)(new Date());
+        const record = await Attendance_1.Attendance.findOne({ employee: emp._id, date: { $gte: todayStart } });
+        if (!record?.breakStart) {
+            res.status(400).json({ error: { code: 'NO_BREAK_STARTED', message: 'You have not started a break today' } });
+            return;
+        }
+        if (record.breakEnd) {
+            res.status(400).json({ error: { code: 'BREAK_ALREADY_ENDED', message: 'Your break has already been ended' } });
+            return;
+        }
+        record.breakEnd = new Date();
+        await record.save();
+        await auditService_1.auditService.log(req, { action: 'ATTENDANCE_BREAK_END', module: 'ATTENDANCE', recordId: record._id.toString(), recordLabel: emp.fullName });
+        res.json({ data: record });
+    }
+    catch (err) { next(err); }
+};
+exports.breakOut = breakOut;
 
 const updateAttendance = async (req, res, next) => {
     try {

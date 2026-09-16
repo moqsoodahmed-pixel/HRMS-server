@@ -40,7 +40,11 @@ const attendanceSchema = new mongoose_1.Schema({
     date: { type: Date, required: true, index: true },
     checkIn: { type: Date },
     checkOut: { type: Date },
-    workHours: { type: Number },
+    breakStart: { type: Date },
+    breakEnd: { type: Date },
+    breakDurationMinutes: { type: Number, default: 0 }, // actual break taken (capped at org setting)
+    netWorkHours: { type: Number },   // workHours minus break (displayed as "Working Hours")
+    workHours: { type: Number },      // gross hours from checkIn → checkOut (kept for backward compat)
     status: {
         type: String,
         enum: ['PRESENT', 'ABSENT', 'LATE', 'HALF_DAY', 'WORK_FROM_HOME', 'HOLIDAY', 'WEEKEND', 'ON_LEAVE'],
