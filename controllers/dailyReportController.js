@@ -2,18 +2,14 @@
 const { DailyReport } = require("../models/DailyReport");
 const { AppError } = require("../middleware/errorHandler");
 const { isElevated } = require("../utils/roles");
-const { parsePagination, assertObjectId, startOfDay, endOfDay } = require("../utils/helpers");
+const { parsePagination, assertObjectId } = require("../utils/helpers");
 const { notifyDailyReportSubmitted } = require("../services/telegramService");
-
-const MANAGEMENT_ROLES = ["FOUNDER_CEO", "CTO", "SUPER_ADMIN", "PROJECT_HEAD", "MANAGER", "HR_ADMIN"];
 
 function canViewAll(role) {
   return isElevated(role) || ["PROJECT_HEAD", "MANAGER", "HR_ADMIN"].includes(role);
 }
 
-/**
- * POST /api/daily-reports
- */
+// ─── Create (DRAFT) ───────────────────────────────────────────────────────────
 const createReport = async (req, res, next) => {
   try {
     const { Employee } = require("../models/Employee");
@@ -26,7 +22,6 @@ const createReport = async (req, res, next) => {
     const reportDate = new Date(date);
     reportDate.setUTCHours(0, 0, 0, 0);
 
-    // Check if draft already exists
     const existing = await DailyReport.findOne({ employee: emp._id, date: reportDate });
     if (existing) throw new AppError("A report already exists for this date. Please edit the existing report.", 409, "DUPLICATE");
 
@@ -42,9 +37,7 @@ const createReport = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-/**
- * PATCH /api/daily-reports/:id
- */
+// ─── Update ───────────────────────────────────────────────────────────────────
 const updateReport = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -53,16 +46,13 @@ const updateReport = async (req, res, next) => {
     const report = await DailyReport.findById(id);
     if (!report) throw new AppError("Report not found", 404, "NOT_FOUND");
 
-    // Only the employee who created it can edit (while DRAFT)
-    if (req.user?.role === "EMPLOYEE" || !canViewAll(req.user?.role)) {
+    if (!canViewAll(req.user?.role)) {
       const { Employee } = require("../models/Employee");
       const emp = await Employee.findOne({ user: req.user.userId }).select("_id").lean();
-      if (!emp || String(report.employee) !== String(emp._id)) {
+      if (!emp || String(report.employee) !== String(emp._id))
         throw new AppError("Access denied", 403, "FORBIDDEN");
-      }
-      if (report.status === "SUBMITTED") {
+      if (report.status === "SUBMITTED")
         throw new AppError("Cannot edit a submitted report. Contact your manager.", 400, "SUBMITTED");
-      }
     }
 
     const { workSummary, tasksCompleted, tasksInProgress, blockers, nextDayPlan, additionalNotes, hoursWorked } = req.body;
@@ -73,9 +63,7 @@ const updateReport = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-/**
- * POST /api/daily-reports/:id/submit
- */
+// ─── Submit ───────────────────────────────────────────────────────────────────
 const submitReport = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -84,22 +72,19 @@ const submitReport = async (req, res, next) => {
     const report = await DailyReport.findById(id);
     if (!report) throw new AppError("Report not found", 404, "NOT_FOUND");
 
-    // Only the employee who owns it can submit
     const { Employee } = require("../models/Employee");
     const emp = await Employee.findOne({ user: req.user.userId }).select("_id").lean();
-    if (!emp || String(report.employee) !== String(emp._id)) {
+    if (!emp || String(report.employee) !== String(emp._id))
       throw new AppError("Access denied", 403, "FORBIDDEN");
-    }
 
-    if (report.status !== "DRAFT" && report.status !== "NEEDS_REVISION") {
+    if (report.status !== "DRAFT" && report.status !== "NEEDS_REVISION")
       throw new AppError("Report is already submitted", 400, "INVALID_STATE");
-    }
 
     report.status = "SUBMITTED";
     report.submittedAt = new Date();
     await report.save();
 
-    // ── In-app notifications to management ──────────────────────────────────
+    // ── In-app notifications ────────────────────────────────────────────────
     try {
       const { User } = require("../models/User");
       const { Notification } = require("../models/NotificationAudit");
@@ -121,7 +106,9 @@ const submitReport = async (req, res, next) => {
           }))
         );
       }
-    } catch (_) {}
+    } catch (notifErr) {
+      console.error("[dailyReportController] In-app notification failed:", notifErr.message);
+    }
 
     // ── Telegram notification ────────────────────────────────────────────────
     try {
@@ -130,10 +117,12 @@ const submitReport = async (req, res, next) => {
         .lean();
 
       if (empDoc) {
+        console.log(`[dailyReportController] Sending Telegram notification for report ${report._id} by ${empDoc.fullName}`);
         await notifyDailyReportSubmitted(empDoc, report);
+      } else {
+        console.warn("[dailyReportController] Could not find employee doc for Telegram notification.");
       }
     } catch (telegramErr) {
-      // Telegram failure must never break the submit response
       console.error("[dailyReportController] Telegram notify failed:", telegramErr.message);
     }
 
@@ -141,9 +130,7 @@ const submitReport = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-/**
- * POST /api/daily-reports/:id/review
- */
+// ─── Review ───────────────────────────────────────────────────────────────────
 const reviewReport = async (req, res, next) => {
   try {
     if (!canViewAll(req.user?.role)) throw new AppError("Forbidden", 403, "FORBIDDEN");
@@ -155,9 +142,8 @@ const reviewReport = async (req, res, next) => {
     if (!report) throw new AppError("Report not found", 404, "NOT_FOUND");
 
     const { status, reviewerComments } = req.body;
-    if (!["REVIEWED", "NEEDS_REVISION"].includes(status)) {
+    if (!["REVIEWED", "NEEDS_REVISION"].includes(status))
       throw new AppError("Status must be REVIEWED or NEEDS_REVISION", 400, "VALIDATION");
-    }
 
     report.status = status;
     report.reviewedBy = req.user.userId;
@@ -169,9 +155,7 @@ const reviewReport = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-/**
- * GET /api/daily-reports/me
- */
+// ─── Get My Reports ───────────────────────────────────────────────────────────
 const getMyReports = async (req, res, next) => {
   try {
     const { Employee } = require("../models/Employee");
@@ -198,9 +182,7 @@ const getMyReports = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-/**
- * GET /api/daily-reports
- */
+// ─── Get All Reports (management) ─────────────────────────────────────────────
 const getAllReports = async (req, res, next) => {
   try {
     if (!canViewAll(req.user?.role)) throw new AppError("Forbidden", 403, "FORBIDDEN");
@@ -216,11 +198,10 @@ const getAllReports = async (req, res, next) => {
       if (endDate) query.date.$lte = new Date(endDate);
     }
 
-    // If not elevated/full access, scope to team
     let employeeIds = null;
     if (!isElevated(req.user?.role) && req.user?.role !== "HR_ADMIN") {
       const { Employee } = require("../models/Employee");
-      const emp = await Employee.findOne({ user: req.user.userId }).select("_id department").lean();
+      const emp = await Employee.findOne({ user: req.user.userId }).select("_id").lean();
       if (emp && req.user?.role === "MANAGER") {
         const teamMembers = await Employee.find({ manager: emp._id }).select("_id").lean();
         employeeIds = teamMembers.map(m => m._id);
@@ -246,7 +227,6 @@ const getAllReports = async (req, res, next) => {
       DailyReport.countDocuments(query),
     ]);
 
-    // Filter by department or search after populate
     let filtered = reports;
     if (department) filtered = filtered.filter(r => r.employee?.department === department);
     if (search) {
@@ -262,9 +242,7 @@ const getAllReports = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-/**
- * GET /api/daily-reports/:id
- */
+// ─── Get Single Report ────────────────────────────────────────────────────────
 const getReport = async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -277,22 +255,18 @@ const getReport = async (req, res, next) => {
 
     if (!report) throw new AppError("Report not found", 404, "NOT_FOUND");
 
-    // Employee can only see their own
     if (!canViewAll(req.user?.role)) {
       const { Employee } = require("../models/Employee");
       const emp = await Employee.findOne({ user: req.user.userId }).select("_id").lean();
-      if (!emp || String(report.employee?._id) !== String(emp._id)) {
+      if (!emp || String(report.employee?._id) !== String(emp._id))
         throw new AppError("Access denied", 403, "FORBIDDEN");
-      }
     }
 
     res.json({ data: report });
   } catch (err) { next(err); }
 };
 
-/**
- * GET /api/daily-reports/stats
- */
+// ─── Stats ────────────────────────────────────────────────────────────────────
 const getReportStats = async (req, res, next) => {
   try {
     if (!canViewAll(req.user?.role)) throw new AppError("Forbidden", 403, "FORBIDDEN");

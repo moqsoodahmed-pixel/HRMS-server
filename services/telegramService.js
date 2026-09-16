@@ -5,23 +5,16 @@
  * ─────────────────
  * Sends Telegram messages via the Bot API (no extra library needed — pure HTTPS).
  *
- * How it works
- * ────────────
- * 1. You create a Telegram Bot via @BotFather → get a BOT_TOKEN.
- * 2. The Founder/CEO starts a chat with the bot (or adds it to a group/channel).
- * 3. The chat_id is stored in OrgSettings (telegram.notifyChatId).
- * 4. Every time an employee clocks in, this service fires a message to that chat.
- * 5. When an employee submits a daily report, a notification is also sent.
- *
- * Environment variables (add to .env)
- * ─────────────────────────────────────
- *   TELEGRAM_BOT_TOKEN=<your-bot-token-from-BotFather>
- *
  * OrgSettings fields (stored in DB, editable via Settings page)
  * ──────────────────────────────────────────────────────────────
- *   telegram.botToken      – overrides env var (optional, lets admin set from UI)
+ *   telegram.botToken      – overrides env var (optional)
  *   telegram.notifyChatId  – the Founder/CEO's Telegram chat ID (required)
  *   telegram.enabled       – boolean, master on/off switch
+ *
+ * Environment variables (.env fallback)
+ * ─────────────────────────────────────
+ *   TELEGRAM_BOT_TOKEN=<your-bot-token-from-BotFather>
+ *   TELEGRAM_CHAT_ID=<your-chat-id>
  */
 
 const https = require("https");
@@ -29,12 +22,12 @@ const { OrgSettings } = require("../models/OrgSettings");
 
 /**
  * Resolves the active Telegram config.
- * DB values take precedence over env vars so the admin can change them without
- * redeploying.
+ * NOTE: botToken has `select: false` in OrgSettings schema, so we must
+ * explicitly select it with +botToken.
  */
 async function getTelegramConfig() {
   const settings = await OrgSettings.findOne({ singletonKey: "default" })
-    .select("telegram")
+    .select("+telegram.botToken telegram.notifyChatId telegram.enabled")
     .lean();
 
   const cfg = settings?.telegram || {};
@@ -42,29 +35,30 @@ async function getTelegramConfig() {
   return {
     botToken: cfg.botToken || process.env.TELEGRAM_BOT_TOKEN || "",
     chatId:   cfg.notifyChatId || process.env.TELEGRAM_CHAT_ID || "",
-    enabled:  cfg.enabled !== false, // default true if not explicitly false
+    enabled:  cfg.enabled !== false,
   };
 }
 
 /**
- * Sends a plain-text (HTML) message to the configured chat.
- * Errors are caught and logged but never bubble up — a Telegram failure
- * should never break a check-in response.
- *
- * @param {string} text  – The message text (HTML supported)
+ * Core send function — sends an HTML-formatted message to the configured chat.
+ * Errors are caught and logged but never bubble up.
  */
 async function sendMessage(text) {
   try {
     const { botToken, chatId, enabled } = await getTelegramConfig();
 
-    if (!enabled) return;
+    if (!enabled) {
+      console.log("[TelegramService] Notifications disabled — skipping.");
+      return;
+    }
     if (!botToken || !chatId) {
       console.warn(
-        `[TelegramService] Missing config — botToken: ${botToken ? 'SET' : 'MISSING'}, chatId: ${chatId ? 'SET (' + chatId + ')' : 'MISSING'} — skipping notification.`
+        `[TelegramService] Missing config — botToken: ${botToken ? "SET" : "MISSING"}, chatId: ${chatId ? "SET (" + chatId + ")" : "MISSING"} — skipping.`
       );
       return;
     }
-    console.log(`[TelegramService] Sending to chatId: ${chatId}`);
+
+    console.log(`[TelegramService] Sending message to chatId: ${chatId}`);
 
     const payload = JSON.stringify({
       chat_id: chatId,
@@ -87,48 +81,43 @@ async function sendMessage(text) {
           let body = "";
           res.on("data", (chunk) => (body += chunk));
           res.on("end", () => {
-            const parsed = JSON.parse(body);
-            if (!parsed.ok) {
-              console.error(
-                `[TelegramService] API error: ${parsed.description}`
-              );
+            try {
+              const parsed = JSON.parse(body);
+              if (!parsed.ok) {
+                console.error(`[TelegramService] API error: ${parsed.description}`);
+              } else {
+                console.log("[TelegramService] Message sent successfully.");
+              }
+            } catch (e) {
+              console.error("[TelegramService] Failed to parse response:", e.message);
             }
             resolve();
           });
         }
       );
-      req.on("error", reject);
+      req.on("error", (err) => {
+        console.error("[TelegramService] Request error:", err.message);
+        resolve(); // resolve so we don't crash the caller
+      });
       req.write(payload);
       req.end();
     });
   } catch (err) {
-    // Never let Telegram errors crash the main request
     console.error("[TelegramService] Failed to send message:", err.message);
   }
 }
 
-/**
- * Formats and sends a Clock-In notification to the Founder/CEO.
- *
- * @param {object} employee  – Mongoose Employee document
- * @param {Date}   checkInTime
- * @param {boolean} isLate
- * @param {number}  lateMinutes
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// Notification helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
 async function notifyClockIn(employee, checkInTime, isLate, lateMinutes) {
   const timeStr = checkInTime.toLocaleTimeString("en-IN", {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: true,
-    timeZone: process.env.TZ || "Asia/Kolkata",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: true, timeZone: process.env.TZ || "Asia/Kolkata",
   });
-
   const dateStr = checkInTime.toLocaleDateString("en-IN", {
-    weekday: "long",
-    year: "numeric",
-    month: "long",
-    day: "numeric",
+    weekday: "long", year: "numeric", month: "long", day: "numeric",
     timeZone: process.env.TZ || "Asia/Kolkata",
   });
 
@@ -148,45 +137,19 @@ async function notifyClockIn(employee, checkInTime, isLate, lateMinutes) {
   await sendMessage(message);
 }
 
-/**
- * Formats and sends a Clock-Out notification to the Founder/CEO.
- *
- * @param {object} employee
- * @param {Date}   checkOutTime
- * @param {number} workHours
- * @param {boolean} isEarlyExit
- * @param {number}  earlyExitMinutes
- */
-async function notifyClockOut(
-  employee,
-  checkOutTime,
-  workHours,
-  isEarlyExit,
-  earlyExitMinutes
-) {
+async function notifyClockOut(employee, checkOutTime, workHours, isEarlyExit, earlyExitMinutes) {
   const timeStr = checkOutTime.toLocaleTimeString("en-IN", {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: true,
-    timeZone: process.env.TZ || "Asia/Kolkata",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: true, timeZone: process.env.TZ || "Asia/Kolkata",
   });
-
   const dateStr = checkOutTime.toLocaleDateString("en-IN", {
-    weekday: "long",
-    year: "numeric",
-    month: "long",
-    day: "numeric",
+    weekday: "long", year: "numeric", month: "long", day: "numeric",
     timeZone: process.env.TZ || "Asia/Kolkata",
   });
 
   const statusEmoji = isEarlyExit ? "🟡" : "✅";
-  const statusLabel = isEarlyExit
-    ? `Early exit by ${earlyExitMinutes} min`
-    : "Full Day";
-
-  const hoursLabel =
-    workHours != null ? `${workHours.toFixed(2)} hrs` : "N/A";
+  const statusLabel = isEarlyExit ? `Early exit by ${earlyExitMinutes} min` : "Full Day";
+  const hoursLabel = workHours != null ? `${workHours.toFixed(2)} hrs` : "N/A";
 
   const message =
     `${statusEmoji} <b>Employee Clock-Out Alert</b>\n\n` +
@@ -203,37 +166,30 @@ async function notifyClockOut(
 }
 
 /**
- * Formats and sends a Daily Report Submitted notification to the Founder/CEO.
+ * Sends a Daily Report Submitted notification.
  *
- * @param {object} employee   – Mongoose Employee document (with fullName, employeeCode, department, designation)
- * @param {object} report     – Mongoose DailyReport document
+ * @param {object} employee  – { fullName, employeeCode, department, designation }
+ * @param {object} report    – DailyReport document
  */
 async function notifyDailyReportSubmitted(employee, report) {
-  const submittedAt = (report.submittedAt || new Date()).toLocaleTimeString("en-IN", {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: true,
-    timeZone: process.env.TZ || "Asia/Kolkata",
+  const submittedAt = new Date(report.submittedAt || Date.now()).toLocaleTimeString("en-IN", {
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: true, timeZone: process.env.TZ || "Asia/Kolkata",
   });
 
   const reportDate = new Date(report.date).toLocaleDateString("en-IN", {
-    weekday: "long",
-    year: "numeric",
-    month: "long",
-    day: "numeric",
+    weekday: "long", year: "numeric", month: "long", day: "numeric",
     timeZone: process.env.TZ || "Asia/Kolkata",
   });
 
-  // Truncate long text fields to keep message readable in Telegram
-  const truncate = (text, maxLen = 200) => {
+  const truncate = (text, maxLen = 300) => {
     if (!text) return "—";
     return text.length > maxLen ? text.substring(0, maxLen) + "..." : text;
   };
 
   const hoursLabel = report.hoursWorked != null ? `${report.hoursWorked} hrs` : "—";
 
-  const message =
+  let message =
     `📋 <b>Daily Report Submitted</b>\n\n` +
     `👤 <b>Name:</b> ${employee.fullName}\n` +
     `🪪 <b>Employee Code:</b> ${employee.employeeCode}\n` +
@@ -248,13 +204,11 @@ async function notifyDailyReportSubmitted(employee, report) {
     `🚧 <b>Blockers:</b>\n${truncate(report.blockers)}\n\n` +
     `📌 <b>Next Day Plan:</b>\n${truncate(report.nextDayPlan)}\n`;
 
-  // Only include additional notes if present
   if (report.additionalNotes) {
-    const notesLine = `\n🗒️ <b>Additional Notes:</b>\n${truncate(report.additionalNotes)}\n`;
-    await sendMessage(message + notesLine);
-  } else {
-    await sendMessage(message);
+    message += `\n🗒️ <b>Additional Notes:</b>\n${truncate(report.additionalNotes)}\n`;
   }
+
+  await sendMessage(message);
 }
 
 module.exports = { notifyClockIn, notifyClockOut, notifyDailyReportSubmitted, sendMessage };
