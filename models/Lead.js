@@ -44,6 +44,18 @@ const leadSchema = new mongoose.Schema(
     statusUpdatedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     assignmentRound: { type: Number },
     assignmentBatchSize: { type: Number },
+    // Calling data fields (for sales team use)
+    callStatus: {
+      type: String,
+      enum: ["", "Busy", "Connected", "Switched Off", "not answered", "picked but disconnected", "out of service", "call later"],
+      default: "",
+    },
+    serviceInterest: {
+      type: String,
+      enum: ["", "Startup India", "GST", "MSME", "Trademark", "Labour Certificate", "Website Development", "Others"],
+      default: "",
+    },
+    callNotes: { type: String, trim: true },
     // History
     statusHistory: [statusHistorySchema],
     reassignmentHistory: [reassignmentSchema],

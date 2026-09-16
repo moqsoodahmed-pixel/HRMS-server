@@ -376,9 +376,14 @@ const updateLeadStatus = async (req, res, next) => {
   try {
     const { id } = req.params;
     assertObjectId(id, "lead id");
-    const { status, notes } = req.body;
+    const { status, notes, callStatus, serviceInterest, callNotes } = req.body;
+
+    const VALID_CALL_STATUSES = ["", "Busy", "Connected", "Switched Off", "not answered", "picked but disconnected", "out of service", "call later"];
+    const VALID_SERVICE_INTERESTS = ["", "Startup India", "GST", "MSME", "Trademark", "Labour Certificate", "Website Development", "Others"];
 
     if (!VALID_STATUSES.includes(status)) throw new AppError(`Invalid status. Must be one of: ${VALID_STATUSES.join(", ")}`, 400, "INVALID_STATUS");
+    if (callStatus !== undefined && !VALID_CALL_STATUSES.includes(callStatus)) throw new AppError("Invalid call status", 400, "INVALID_CALL_STATUS");
+    if (serviceInterest !== undefined && !VALID_SERVICE_INTERESTS.includes(serviceInterest)) throw new AppError("Invalid service interest", 400, "INVALID_SERVICE_INTEREST");
 
     const lead = await Lead.findById(id);
     if (!lead) throw new AppError("Lead not found", 404, "NOT_FOUND");
@@ -395,6 +400,9 @@ const updateLeadStatus = async (req, res, next) => {
     const previousStatus = lead.status;
     lead.status = status;
     if (notes !== undefined) lead.notes = notes;
+    if (callStatus !== undefined) lead.callStatus = callStatus;
+    if (serviceInterest !== undefined) lead.serviceInterest = serviceInterest;
+    if (callNotes !== undefined) lead.callNotes = callNotes;
     lead.statusUpdatedAt = new Date();
     lead.statusUpdatedBy = req.user.userId;
     if (status === "CONTACTED") lead.lastContactedAt = new Date();
