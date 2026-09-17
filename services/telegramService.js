@@ -44,18 +44,55 @@ async function getAttendanceConfig() {
     ? cfg.enabled === true          // UI-configured: honor the explicit toggle
     : Boolean(botToken && chatId);  // env-configured: on as long as creds exist
 
+  if (!enabled) {
+    console.warn(
+      "[TelegramService] Clock-in/out notifications are OFF — " +
+      (configuredInUi
+        ? "Telegram was configured via Settings UI but is toggled disabled there."
+        : `missing credentials (botToken: ${botToken ? "SET" : "MISSING"}, chatId: ${chatId ? "SET" : "MISSING"}).`)
+    );
+  } else if (PLACEHOLDER_CHAT_IDS.has(chatId)) {
+    console.error(
+      `[TelegramService] Clock-in/out chat id "${chatId}" looks like a placeholder value, not a real Telegram chat id.`
+    );
+  }
+
   return { botToken, chatId, enabled };
 }
+
+// Telegram's own docs use this exact chat id as their generic example — anyone
+// who copy-pasted a sample .env instead of running get-telegram-chat-id.js
+// ends up with this literal value. It is never a real chat id.
+const PLACEHOLDER_CHAT_IDS = new Set(["-1001234567890", "1234567890"]);
 
 /**
  * Config for Daily Report bot (new dedicated bot, from env only)
  */
 function getDailyReportConfig() {
-  return {
-    botToken: process.env.TELEGRAM_DAILY_REPORT_BOT_TOKEN || "",
-    chatId:   process.env.TELEGRAM_DAILY_REPORT_CHAT_ID || "",
-    enabled:  true,
-  };
+  const botToken = process.env.TELEGRAM_DAILY_REPORT_BOT_TOKEN || "";
+  const chatId   = process.env.TELEGRAM_DAILY_REPORT_CHAT_ID || "";
+
+  if (!botToken || !chatId) {
+    console.warn(
+      "[TelegramService] Daily Report bot is not configured — " +
+      `TELEGRAM_DAILY_REPORT_BOT_TOKEN: ${botToken ? "SET" : "MISSING"}, ` +
+      `TELEGRAM_DAILY_REPORT_CHAT_ID: ${chatId ? "SET" : "MISSING"}. ` +
+      "Daily report notifications will not be sent."
+    );
+    return { botToken, chatId, enabled: false };
+  }
+
+  if (PLACEHOLDER_CHAT_IDS.has(chatId)) {
+    console.error(
+      `[TelegramService] TELEGRAM_DAILY_REPORT_CHAT_ID is still set to the placeholder value "${chatId}". ` +
+      "This is a sample id from Telegram's docs, not a real group/channel id — messages will silently fail " +
+      "with 'chat not found'. Run `node scripts/get-telegram-chat-id.js daily` after adding the daily-report " +
+      "bot to your group and posting a message there, then set the real id in your deployment's env vars."
+    );
+    return { botToken, chatId, enabled: false };
+  }
+
+  return { botToken, chatId, enabled: true };
 }
 
 // ─── Core sender ──────────────────────────────────────────────────────────────
@@ -67,10 +104,9 @@ function getDailyReportConfig() {
 async function sendTelegramMessage(botToken, chatId, text) {
   try {
     if (!botToken || !chatId) {
-      console.warn(
-        `[TelegramService] Missing config — botToken: ${botToken ? "SET" : "MISSING"}, chatId: ${chatId ? "SET (" + chatId + ")" : "MISSING"} — skipping.`
-      );
-      return;
+      const reason = `Missing config — botToken: ${botToken ? "SET" : "MISSING"}, chatId: ${chatId ? "SET (" + chatId + ")" : "MISSING"}`;
+      console.warn(`[TelegramService] ${reason} — skipping.`);
+      return { ok: false, description: reason };
     }
 
     console.log(`[TelegramService] Sending message to chatId: ${chatId}`);
@@ -81,7 +117,7 @@ async function sendTelegramMessage(botToken, chatId, text) {
       parse_mode: "HTML",
     });
 
-    await new Promise((resolve) => {
+    return await new Promise((resolve) => {
       const req = https.request(
         {
           hostname: "api.telegram.org",
@@ -100,33 +136,62 @@ async function sendTelegramMessage(botToken, chatId, text) {
               const parsed = JSON.parse(body);
               if (!parsed.ok) {
                 console.error(`[TelegramService] API error: ${parsed.description}`);
+                resolve({ ok: false, description: parsed.description });
               } else {
                 console.log("[TelegramService] Message sent successfully.");
+                resolve({ ok: true, result: parsed.result });
               }
             } catch (e) {
               console.error("[TelegramService] Failed to parse response:", e.message);
+              resolve({ ok: false, description: `Failed to parse Telegram response: ${e.message}` });
             }
-            resolve();
           });
         }
       );
       req.on("error", (err) => {
         console.error("[TelegramService] Request error:", err.message);
-        resolve();
+        resolve({ ok: false, description: err.message });
       });
       req.write(payload);
       req.end();
     });
   } catch (err) {
     console.error("[TelegramService] Failed to send message:", err.message);
+    return { ok: false, description: err.message };
   }
 }
 
 // ─── Legacy wrapper (used by sendMessage callers if any) ─────────────────────
 async function sendMessage(text) {
   const { botToken, chatId, enabled } = await getAttendanceConfig();
-  if (!enabled) { console.log("[TelegramService] Attendance notifications disabled."); return; }
-  await sendTelegramMessage(botToken, chatId, text);
+  if (!enabled) {
+    console.log("[TelegramService] Attendance notifications disabled.");
+    return { ok: false, description: "Attendance Telegram bot is disabled or not configured — check server logs for the specific reason." };
+  }
+  return await sendTelegramMessage(botToken, chatId, text);
+}
+
+// ─── Test helper for the Daily Report bot ─────────────────────────────────────
+/**
+ * Sends a real test message through the dedicated Daily Report bot/chat.
+ * Returns { ok, description? } so a controller/route can report true
+ * success or failure back to the caller instead of assuming it worked.
+ */
+async function testDailyReportBot() {
+  const { botToken, chatId, enabled } = getDailyReportConfig();
+  if (!enabled) {
+    return {
+      ok: false,
+      description: !botToken || !chatId
+        ? "Daily Report bot is not configured (missing TELEGRAM_DAILY_REPORT_BOT_TOKEN or TELEGRAM_DAILY_REPORT_CHAT_ID)."
+        : `TELEGRAM_DAILY_REPORT_CHAT_ID "${chatId}" is a placeholder value, not a real chat id.`,
+    };
+  }
+  return await sendTelegramMessage(
+    botToken,
+    chatId,
+    "✅ <b>Daily Report Telegram integration is working!</b>\n\nYour HRMS will now send daily report submissions to this chat."
+  );
 }
 
 // ─── Clock-In notification ────────────────────────────────────────────────────
@@ -196,7 +261,10 @@ async function notifyDailyReportSubmitted(employee, report) {
   // Uses the DEDICATED daily report bot — completely separate from clock-in/out
   const { botToken, chatId, enabled } = getDailyReportConfig();
 
-  if (!enabled) return;
+  if (!enabled) {
+    console.warn("[TelegramService] Daily Report notification skipped — bot disabled/misconfigured (see warning above).");
+    return;
+  }
 
   const submittedAt = new Date(report.submittedAt || Date.now()).toLocaleTimeString("en-IN", {
     hour: "2-digit", minute: "2-digit", second: "2-digit",
@@ -238,4 +306,4 @@ async function notifyDailyReportSubmitted(employee, report) {
   await sendTelegramMessage(botToken, chatId, message);
 }
 
-module.exports = { notifyClockIn, notifyClockOut, notifyDailyReportSubmitted, sendMessage };
+module.exports = { notifyClockIn, notifyClockOut, notifyDailyReportSubmitted, sendMessage, testDailyReportBot };

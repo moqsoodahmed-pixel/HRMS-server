@@ -243,6 +243,7 @@ router.patch('/exit-requests/:id/complete', authenticate, authorize(...HR), exit
 router.get('/settings', authenticate, authorize(), orgC.getSettings);
 router.patch('/settings', authenticate, authorize(), orgC.updateSettings);
 router.post('/settings/telegram/test', authenticate, authorize(), orgC.testTelegramNotification);
+router.post('/settings/telegram/test-daily-report', authenticate, authorize(), orgC.testDailyReportTelegramNotification);
 
 // ─── Sales Leads ─────────────────────────────────────────────────────────────
 // NOTE: specific sub-paths BEFORE /:id to avoid route conflicts

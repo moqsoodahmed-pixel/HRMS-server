@@ -98,18 +98,50 @@ exports.updateSettings = updateSettings;
  * Sends a test message to verify bot token + chat ID are correct.
  * Elevated roles only.
  */
-const { sendMessage } = require("../services/telegramService");
+const { sendMessage, testDailyReportBot } = require("../services/telegramService");
 
 const testTelegramNotification = async (req, res, next) => {
     try {
         if (!isElevated(req.user?.role)) {
             throw new AppError('Only an organization owner/administrator can test Telegram', 403, 'FORBIDDEN');
         }
-        await sendMessage(
+        const result = await sendMessage(
             '✅ <b>Telegram integration is working!</b>\n\nYour HRMS will now send employee clock-in/out alerts to this chat.'
         );
-        res.json({ data: { sent: true, message: 'Test notification sent successfully.' } });
+        if (!result?.ok) {
+            res.status(502).json({
+                data: { sent: false },
+                error: { code: 'TELEGRAM_SEND_FAILED', message: result?.description || 'Failed to send test message. Check server logs.' },
+            });
+            return;
+        }
+        res.json({ data: { sent: true, message: 'Test notification sent successfully — check the clock-in/out Telegram chat.' } });
     }
     catch (err) { next(err); }
 };
 exports.testTelegramNotification = testTelegramNotification;
+
+/**
+ * POST /api/settings/telegram/test-daily-report
+ * Sends a test message via the DEDICATED daily-report bot to verify
+ * TELEGRAM_DAILY_REPORT_BOT_TOKEN + TELEGRAM_DAILY_REPORT_CHAT_ID are correct.
+ * Elevated roles only.
+ */
+const testDailyReportTelegramNotification = async (req, res, next) => {
+    try {
+        if (!isElevated(req.user?.role)) {
+            throw new AppError('Only an organization owner/administrator can test Telegram', 403, 'FORBIDDEN');
+        }
+        const result = await testDailyReportBot();
+        if (!result?.ok) {
+            res.status(502).json({
+                data: { sent: false },
+                error: { code: 'TELEGRAM_SEND_FAILED', message: result?.description || 'Failed to send test message. Check server logs.' },
+            });
+            return;
+        }
+        res.json({ data: { sent: true, message: 'Test notification sent successfully — check the daily-report Telegram chat.' } });
+    }
+    catch (err) { next(err); }
+};
+exports.testDailyReportTelegramNotification = testDailyReportTelegramNotification;
