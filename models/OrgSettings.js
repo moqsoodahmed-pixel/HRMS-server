@@ -29,6 +29,13 @@ const orgSettingsSchema = new mongoose.Schema({
         notifyChatId: { type: String },
         notifyClockOut: { type: Boolean, default: true },
     },
+    // Dedicated bot for Daily Report submissions — same shape as `telegram`
+    // above, kept separate on purpose (different bot/group entirely).
+    dailyReportTelegram: {
+        enabled: { type: Boolean, default: true },
+        botToken: { type: String, select: false },
+        notifyChatId: { type: String },
+    },
     // Lead management settings
     leads: {
         batchSize: { type: Number, default: 50, min: 1, max: 500 },

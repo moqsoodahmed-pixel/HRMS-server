@@ -66,28 +66,43 @@ async function getAttendanceConfig() {
 const PLACEHOLDER_CHAT_IDS = new Set(["-1001234567890", "1234567890"]);
 
 /**
- * Config for Daily Report bot (new dedicated bot, from env only)
+ * Config for Daily Report bot (OrgSettings UI first, env as fallback)
  */
-function getDailyReportConfig() {
-  const botToken = process.env.TELEGRAM_DAILY_REPORT_BOT_TOKEN || "";
-  const chatId   = process.env.TELEGRAM_DAILY_REPORT_CHAT_ID || "";
+async function getDailyReportConfig() {
+  const settings = await OrgSettings.findOne({ singletonKey: "default" })
+    .select("+dailyReportTelegram.botToken dailyReportTelegram.notifyChatId dailyReportTelegram.enabled")
+    .lean();
+
+  const cfg = settings?.dailyReportTelegram || {};
+
+  const botToken = cfg.botToken || process.env.TELEGRAM_DAILY_REPORT_BOT_TOKEN || "";
+  const chatId   = cfg.notifyChatId || process.env.TELEGRAM_DAILY_REPORT_CHAT_ID || "";
+
+  const configuredInUi = Boolean(cfg.botToken || cfg.notifyChatId);
+  const enabled = configuredInUi
+    ? cfg.enabled === true
+    : Boolean(botToken && chatId);
 
   if (!botToken || !chatId) {
     console.warn(
       "[TelegramService] Daily Report bot is not configured — " +
-      `TELEGRAM_DAILY_REPORT_BOT_TOKEN: ${botToken ? "SET" : "MISSING"}, ` +
-      `TELEGRAM_DAILY_REPORT_CHAT_ID: ${chatId ? "SET" : "MISSING"}. ` +
+      `botToken: ${botToken ? "SET" : "MISSING"}, chatId: ${chatId ? "SET" : "MISSING"}. ` +
       "Daily report notifications will not be sent."
     );
     return { botToken, chatId, enabled: false };
   }
 
+  if (!enabled) {
+    console.warn("[TelegramService] Daily Report notifications are OFF — toggled disabled in Settings.");
+    return { botToken, chatId, enabled: false };
+  }
+
   if (PLACEHOLDER_CHAT_IDS.has(chatId)) {
     console.error(
-      `[TelegramService] TELEGRAM_DAILY_REPORT_CHAT_ID is still set to the placeholder value "${chatId}". ` +
+      `[TelegramService] Daily Report chat id "${chatId}" is still set to the placeholder value. ` +
       "This is a sample id from Telegram's docs, not a real group/channel id — messages will silently fail " +
       "with 'chat not found'. Run `node scripts/get-telegram-chat-id.js daily` after adding the daily-report " +
-      "bot to your group and posting a message there, then set the real id in your deployment's env vars."
+      "bot to your group and posting a message there, then set the real id (env var or Settings UI)."
     );
     return { botToken, chatId, enabled: false };
   }
@@ -182,7 +197,7 @@ async function sendMessage(text) {
  * success or failure back to the caller instead of assuming it worked.
  */
 async function testDailyReportBot() {
-  const { botToken, chatId, enabled } = getDailyReportConfig();
+  const { botToken, chatId, enabled } = await getDailyReportConfig();
   if (!enabled) {
     return {
       ok: false,
@@ -263,7 +278,7 @@ async function notifyClockOut(employee, checkOutTime, workHours, isEarlyExit, ea
 // ─── Daily Report notification (separate bot & group) ────────────────────────
 async function notifyDailyReportSubmitted(employee, report) {
   // Uses the DEDICATED daily report bot — completely separate from clock-in/out
-  const { botToken, chatId, enabled } = getDailyReportConfig();
+  const { botToken, chatId, enabled } = await getDailyReportConfig();
 
   if (!enabled) {
     console.warn("[TelegramService] Daily Report notification skipped — bot disabled/misconfigured (see warning above).");

@@ -53,6 +53,14 @@ const updateSchema = z.object({
         notifyChatId: z.string().max(100).optional().or(z.literal('')),
         notifyClockOut: z.boolean().optional(),
     }).optional(),
+    /**
+     * Daily Report bot settings — same shape as `telegram`, separate bot/group.
+     */
+    dailyReportTelegram: z.object({
+        enabled: z.boolean().optional(),
+        botToken: z.string().max(200).optional().or(z.literal('')),
+        notifyChatId: z.string().max(100).optional().or(z.literal('')),
+    }).optional(),
 });
 
 /** Elevated roles only (FOUNDER_CEO/CTO/SUPER_ADMIN) — not even HR_ADMIN. */
@@ -73,20 +81,32 @@ const updateSettings = async (req, res, next) => {
             Object.assign(settings.telegram, otherTelegram);
             if (botToken) settings.telegram.botToken = botToken;
         }
+        if (data.dailyReportTelegram) {
+            settings.dailyReportTelegram = settings.dailyReportTelegram || {};
+            const { botToken, ...otherDaily } = data.dailyReportTelegram;
+            Object.assign(settings.dailyReportTelegram, otherDaily);
+            if (botToken) settings.dailyReportTelegram.botToken = botToken;
+        }
         settings.updatedBy = req.user.userId;
         settings.markModified('telegram');
+        settings.markModified('dailyReportTelegram');
         await settings.save();
 
         await auditService.log(req, {
             action: 'ORG_SETTINGS_UPDATED',
             module: 'SETTINGS',
-            // Strip botToken from audit log to avoid leaking secret
-            newValue: { ...data, telegram: data.telegram ? { ...data.telegram, botToken: data.telegram.botToken ? '***' : undefined } : undefined },
+            // Strip botTokens from audit log to avoid leaking secrets
+            newValue: {
+                ...data,
+                telegram: data.telegram ? { ...data.telegram, botToken: data.telegram.botToken ? '***' : undefined } : undefined,
+                dailyReportTelegram: data.dailyReportTelegram ? { ...data.dailyReportTelegram, botToken: data.dailyReportTelegram.botToken ? '***' : undefined } : undefined,
+            },
         });
 
-        // Return settings but exclude botToken from response
+        // Return settings but exclude botTokens from response
         const result = settings.toObject();
         if (result.telegram) delete result.telegram.botToken;
+        if (result.dailyReportTelegram) delete result.dailyReportTelegram.botToken;
         res.json({ data: result });
     }
     catch (err) { next(err); }
