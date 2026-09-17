@@ -110,7 +110,7 @@ const testTelegramNotification = async (req, res, next) => {
         );
         if (!result?.ok) {
             res.status(502).json({
-                data: { sent: false },
+                data: { sent: false, migratedChatId: result?.migratedChatId },
                 error: { code: 'TELEGRAM_SEND_FAILED', message: result?.description || 'Failed to send test message. Check server logs.' },
             });
             return;
@@ -135,7 +135,7 @@ const testDailyReportTelegramNotification = async (req, res, next) => {
         const result = await testDailyReportBot();
         if (!result?.ok) {
             res.status(502).json({
-                data: { sent: false },
+                data: { sent: false, migratedChatId: result?.migratedChatId },
                 error: { code: 'TELEGRAM_SEND_FAILED', message: result?.description || 'Failed to send test message. Check server logs.' },
             });
             return;

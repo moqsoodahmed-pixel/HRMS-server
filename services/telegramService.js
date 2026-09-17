@@ -136,7 +136,11 @@ async function sendTelegramMessage(botToken, chatId, text) {
               const parsed = JSON.parse(body);
               if (!parsed.ok) {
                 console.error(`[TelegramService] API error: ${parsed.description}`);
-                resolve({ ok: false, description: parsed.description });
+                const migratedId = parsed.parameters?.migrate_to_chat_id;
+                const description = migratedId
+                  ? `${parsed.description} — Telegram says the new chat id is: ${migratedId}. Update your Chat ID setting to this value.`
+                  : parsed.description;
+                resolve({ ok: false, description, migratedChatId: migratedId });
               } else {
                 console.log("[TelegramService] Message sent successfully.");
                 resolve({ ok: true, result: parsed.result });
