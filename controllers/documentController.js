@@ -38,6 +38,59 @@ function safeFilename(name) {
         .slice(0, 120);
 }
 
+// ─── Document visibility ────────────────────────────────────────────────────
+// Uploaded documents (identity proofs, bank details, certificates, photos —
+// now stored in Cloudinary) are the most sensitive files in the system, so
+// this module enforces its OWN, narrower visibility rule instead of reusing
+// utils/helpers.js's resolveEmployeeScope() as-is: every other module
+// (Leave, Assets, Tasks, Dashboard, Reports) keeps using resolveEmployeeScope
+// completely unchanged, so nothing outside Documents is affected by this.
+//
+// Rule: the elevated tier (FOUNDER_CEO / CTO / SUPER_ADMIN — "CEO") and
+// HR_ADMIN may see EVERY employee's documents, company-wide. PROJECT_HEAD
+// and MANAGER may see their OWN team's documents (self + direct reports),
+// exactly like every other team-scoped feature in this app. Every other
+// role — FINANCE, DIRECTOR, AUDITOR, IT_HEAD, EMPLOYEE — may only see and
+// download their OWN uploaded documents, never anyone else's.
+const DOCUMENT_FULL_ACCESS_ROLES = ['HR_ADMIN'];
+const DOCUMENT_TEAM_ROLES = ['PROJECT_HEAD', 'MANAGER'];
+
+/**
+ * Returns `{ scope, employee }` for the Documents module specifically.
+ *  - elevated (FOUNDER_CEO/CTO/SUPER_ADMIN) or HR_ADMIN → scope: undefined
+ *    (sees everyone, company-wide)
+ *  - PROJECT_HEAD / MANAGER                             → scope: self +
+ *    direct reports
+ *  - everyone else                                      → scope: self only
+ *    (never null; a caller with no linked Employee record simply has
+ *    nothing to see)
+ */
+async function resolveDocumentScope(user) {
+    if (roles_1.isElevated(user?.role) || DOCUMENT_FULL_ACCESS_ROLES.includes(user?.role)) {
+        const self = await Employee_1.Employee.findOne({ user: user?.userId }).select('_id').lean();
+        return { scope: undefined, employee: self };
+    }
+    if (DOCUMENT_TEAM_ROLES.includes(user?.role)) {
+        // Reuses the exact same self+direct-reports logic every other
+        // team-scoped feature already relies on — MANAGER/PROJECT_HEAD's
+        // "team" is defined in exactly one place (utils/helpers.js).
+        return (0, helpers_1.resolveEmployeeScope)(user);
+    }
+    const self = await Employee_1.Employee.findOne({ user: user?.userId }).select('_id').lean();
+    return { scope: self ? self._id : null, employee: self };
+}
+
+/** Throws unless the caller may read documents belonging to `employeeId`. */
+async function assertCanAccessEmployee(req, employeeId) {
+    const { scope } = await resolveDocumentScope(req.user);
+    if (scope === undefined) return; // elevated / HR_ADMIN — unrestricted
+    if (scope === null) throw new errorHandler_1.AppError('Access denied', 403, 'FORBIDDEN');
+    const allowed = scope.$in ? scope.$in.map(String) : [String(scope)];
+    if (!allowed.includes(String(employeeId))) {
+        throw new errorHandler_1.AppError('Access denied — you can only view your own documents', 403, 'FORBIDDEN');
+    }
+}
+
 /**
  * Recomputes one employee's document-completion gate from their actual
  * documents and persists it to Employee.documentStatus/hasRejectedDocuments.
@@ -86,18 +139,6 @@ async function syncDocumentStatus(employeeId, { notify = false, req = null } = {
 }
 exports.syncDocumentStatus = syncDocumentStatus;
 
-/** Throws unless the caller may read documents belonging to `employeeId`. */
-async function assertCanAccessEmployee(req, employeeId) {
-    if (roles_1.HR_ROLES.includes(req.user?.role)) return;
-    const { scope } = await (0, helpers_1.resolveEmployeeScope)(req.user);
-    if (scope === undefined) return;
-    if (scope === null) throw new errorHandler_1.AppError('Access denied', 403, 'FORBIDDEN');
-    const allowed = scope.$in ? scope.$in.map(String) : [String(scope)];
-    if (!allowed.includes(String(employeeId))) {
-        throw new errorHandler_1.AppError('Access denied', 403, 'FORBIDDEN');
-    }
-}
-
 const getDocuments = async (req, res, next) => {
     try {
         const { id: employeeId } = req.params;
@@ -129,7 +170,7 @@ const listDocuments = async (req, res, next) => {
         if (category) query.category = category;
 
         const clauses = [];
-        const { scope } = await (0, helpers_1.resolveEmployeeScope)(req.user);
+        const { scope } = await resolveDocumentScope(req.user);
         if (scope !== undefined) clauses.push(scope === null ? { $in: [] } : scope);
         if (employeeId) {
             (0, helpers_1.assertObjectId)(employeeId, 'employeeId');
@@ -176,7 +217,7 @@ exports.listDocuments = listDocuments;
 
 const getDocumentStats = async (req, res, next) => {
     try {
-        const { scope } = await (0, helpers_1.resolveEmployeeScope)(req.user);
+        const { scope } = await resolveDocumentScope(req.user);
         const match = {};
         if (scope !== undefined) match.employee = scope === null ? { $in: [] } : scope;
 
