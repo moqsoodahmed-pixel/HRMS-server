@@ -173,7 +173,7 @@ const getAttendance = async (req, res, next) => {
         }
         if (status) query.status = status;
 
-        const { scope } = await (0, helpers_1.resolveEmployeeScope)(req.user);
+        const { scope } = await (0, helpers_1.resolveEmployeeScope)(req.user, { managerCompanyWide: true });
         const ids = await employeeIdsFor({ department, designation, search });
         if (employeeId) (0, helpers_1.assertObjectId)(employeeId, 'employeeId');
         applyEmployeeFilter(query, scope, ids, employeeId);
@@ -413,7 +413,7 @@ const getAttendanceStats = async (req, res, next) => {
             to = (0, helpers_1.endOfDay)(day);
         }
 
-        const { scope } = await (0, helpers_1.resolveEmployeeScope)(req.user);
+        const { scope } = await (0, helpers_1.resolveEmployeeScope)(req.user, { managerCompanyWide: true });
         const employeeFilter = {};
         const attendanceFilter = { date: { $gte: from, $lte: to } };
         if (scope !== undefined) {

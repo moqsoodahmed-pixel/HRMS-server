@@ -90,13 +90,27 @@ function dateRangeQuery(startDate, endDate) {
  * Team/department scoping is driven entirely by the caller's own linked
  * Employee record (their `manager` chain or `department`) — never a
  * client-supplied filter — so it cannot be bypassed by query parameters.
+ *
+ * `opts.managerCompanyWide` (default false) — when a specific call site opts
+ * in, a caller whose role is exactly MANAGER gets unrestricted company-wide
+ * visibility (`scope: undefined`), same as an elevated admin, instead of the
+ * usual self+reports narrowing. This exists ONLY for the Employees list/detail
+ * and Attendance list/stats endpoints (per product decision: Manager gets
+ * full visibility there, and nowhere else). Every other call site (leave,
+ * documents, assets, tasks, dashboard, reports) omits this option, so MANAGER
+ * stays team-scoped there exactly as before — this flag changes nothing for
+ * PROJECT_HEAD or any other team-scoped role, in any module.
  */
-async function resolveEmployeeScope(user) {
+async function resolveEmployeeScope(user, opts = {}) {
+    const { managerCompanyWide = false } = opts;
     const self = await Employee_1.Employee.findOne({ user: user?.userId })
         .select('_id fullName employeeCode department designation')
         .lean();
     if (user?.role === 'EMPLOYEE') {
         return { scope: self ? self._id : null, employee: self, restricted: true };
+    }
+    if (managerCompanyWide && user?.role === 'MANAGER') {
+        return { scope: undefined, employee: self, restricted: false };
     }
     if (roles_1.isTeamScoped(user?.role)) {
         if (!self) return { scope: null, employee: null, restricted: true };
