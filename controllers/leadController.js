@@ -79,11 +79,8 @@ function rowToLead(row, uploadedBy, uploadBatch, uploadBatchTimestamp) {
                        "director_mobile", "directormobile", "contact_mobile");
   const phone = rawPhone.replace(/`/g, "").replace(/^\+?0+(?=\d{10})/, "").trim();
 
-  // Notes — combine NIC label + address if present
-  const nicLabel = get("nic_label", "niclabel", "industry", "sector");
-  const address = get("registered_address", "registeredaddress", "address");
-  const notes = get("notes", "note", "remarks", "comment", "comments") ||
-    [nicLabel, address].filter(Boolean).join(" | ");
+  // Notes — when new leads are given/imported, note should be empty because user will update it manually
+  const notes = "";
 
   return {
     name,
