@@ -28,6 +28,7 @@ const leadSchema = new mongoose.Schema(
     phone: { type: String, trim: true },
     email: { type: String, trim: true, lowercase: true },
     company: { type: String, trim: true },
+    state: { type: String, trim: true }, // e.g. "Karnataka" — captured from uploaded file when present
     status: {
       type: String,
       enum: ["NEW", "CONTACTED", "INTERESTED", "NOT_INTERESTED", "CONVERTED", "LOST"],
@@ -68,6 +69,7 @@ const leadSchema = new mongoose.Schema(
 );
 
 leadSchema.index({ status: 1 });
+leadSchema.index({ state: 1 });
 leadSchema.index({ uploadBatch: 1 });
 leadSchema.index({ email: 1 });
 leadSchema.index({ assignedTo: 1 });

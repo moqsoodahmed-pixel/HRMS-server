@@ -40,18 +40,67 @@ function normalizeHeader(h) {
   return h.trim().toLowerCase().replace(/[\s\-]+/g, "_").replace(/[^a-z0-9_]/g, "");
 }
 
+/**
+ * Quote-aware CSV tokenizer. A naive line.split(delimiter) breaks as soon as
+ * any field contains a quoted delimiter or a quoted newline (e.g. an MCA
+ * "nicLabel" like "COMPUTER PROGRAMMING, CONSULTANCY AND RELATED ACTIVITIES"
+ * or a multi-line "registeredAddress") — every column after that field then
+ * shifts, silently scrambling name/company/email/phone/state. This walks the
+ * raw text character-by-character so quoted delimiters and newlines never
+ * split a row, and a doubled quote ("") inside a quoted field is unescaped
+ * to a single quote per the CSV spec.
+ */
+function tokenizeCSV(text, delimiter) {
+  const rows = [];
+  let field = "";
+  let row = [];
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; }
+        else { inQuotes = false; }
+      } else {
+        field += c;
+      }
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === delimiter) {
+      row.push(field);
+      field = "";
+    } else if (c === "\r") {
+      // ignore — paired \n (if present) ends the row below
+    } else if (c === "\n") {
+      row.push(field);
+      rows.push(row);
+      field = "";
+      row = [];
+    } else {
+      field += c;
+    }
+  }
+  if (field !== "" || row.length > 0) {
+    row.push(field);
+    rows.push(row);
+  }
+  return rows;
+}
+
 function parseCSV(buffer) {
   const text = buffer.toString("utf8").replace(/^\uFEFF/, "");
-  const lines = text.split(/\r?\n/).filter((l) => l.trim());
-  if (lines.length < 2) throw new AppError("CSV file must have a header row and at least one data row", 400, "INVALID_FILE");
+  const firstLine = text.split(/\r?\n/, 1)[0] || "";
+  const delimiter = firstLine.includes(";") ? ";" : ",";
 
-  const delimiter = lines[0].includes(";") ? ";" : ",";
-  const headers = lines[0].split(delimiter).map(normalizeHeader);
+  const allRows = tokenizeCSV(text, delimiter).filter((r) => r.some((v) => v.trim() !== ""));
+  if (allRows.length < 2) throw new AppError("CSV file must have a header row and at least one data row", 400, "INVALID_FILE");
 
-  return lines.slice(1).map((line) => {
-    const values = line.split(delimiter).map((v) => v.trim().replace(/^"|"$/g, ""));
+  const headers = allRows[0].map(normalizeHeader);
+
+  return allRows.slice(1).map((values) => {
     const row = {};
-    headers.forEach((h, i) => { row[h] = values[i] || ""; });
+    headers.forEach((h, i) => { row[h] = (values[i] || "").trim(); });
     return row;
   });
 }
@@ -68,7 +117,15 @@ function rowToLead(row, uploadedBy, uploadBatch, uploadBatchTimestamp) {
     return "";
   };
 
-  const name = get("name", "full_name", "fullname", "contact_name", "customer_name", "lead_name", "entity_name");
+  // Name — prefer an explicit director/contact-person name when the file
+  // provides one (e.g. MCA/LLP exports have a separate "directorName"
+  // column while "name" holds the company/entity name). Falls back to the
+  // generic name columns for files that only ever had a person's name
+  // under "name" (e.g. the plain Combined Leads format) — unchanged for
+  // those files.
+  const directorName = get("director_name", "directorname");
+  const rawNameColumn = get("name", "full_name", "fullname", "contact_name", "customer_name", "lead_name", "entity_name", "entityname");
+  const name = directorName || rawNameColumn;
   if (!name) return null;
 
   const statusRaw = get("status", "lead_status", "stage").toUpperCase();
@@ -76,18 +133,37 @@ function rowToLead(row, uploadedBy, uploadBatch, uploadBatchTimestamp) {
 
   // Clean phone — remove backticks, spaces, leading zeros issues
   const rawPhone = get("phone", "mobile", "phone_number", "mobile_number", "contact", "contact_number",
-                       "director_mobile", "directormobile", "contact_mobile");
+    "director_mobile", "directormobile", "contact_mobile");
   const phone = rawPhone.replace(/`/g, "").replace(/^\+?0+(?=\d{10})/, "").trim();
 
   // Notes — when new leads are given/imported, note should be empty because user will update it manually
   const notes = "";
 
+  // State — captured as-is from the source file (e.g. "Karnataka") so it can
+  // be used to restrict which leads get imported/assigned, and later to
+  // filter exports. Does not affect distribution/assignment logic itself.
+  const state = get("state", "lead_state", "province", "state_jurisdiction");
+
+  // Email — prefer the director/contact person's own email when the file
+  // splits company email vs. director email (MCA/LLP format). Falls back
+  // to the generic "email" column otherwise — unchanged for files that
+  // only ever had one email column.
+  const email = get("director_email", "directoremail") || get("email", "email_address", "mail");
+
+  // Company — when we pulled the director's name into `name` above, the
+  // raw "name" column (the entity/company name) belongs here instead of
+  // being discarded. Falls back to the generic company columns, then to
+  // `name` itself — unchanged for files with no separate director column.
+  const company = get("company", "company_name", "organization", "organisation", "firm")
+    || (directorName ? rawNameColumn : "")
+    || name;
+
   return {
     name,
     phone: phone || "",
-    email: get("email", "email_address", "mail"),
-    company: get("company", "company_name", "organization", "organisation", "firm",
-                 "entity_name", "entityname") || name,
+    email,
+    company,
+    state,
     notes,
     status,
     uploadedBy,
@@ -152,6 +228,17 @@ async function generateBatchId() {
   return `${prefix}${seq}`;
 }
 
+// ─── State restriction (upload-time) ────────────────────────────────────────
+// Only leads from this state are ever imported/assigned — a raw file mixing
+// all-India data will have every other state's rows silently excluded before
+// distribution, so they never reach a sales employee. Kept as one constant,
+// shared with the state-based export filter, so the two can never drift.
+const UPLOAD_ALLOWED_STATE = "Karnataka";
+const UPLOAD_ALLOWED_STATE_REGEX = new RegExp(`^${UPLOAD_ALLOWED_STATE}$`, "i");
+function isAllowedUploadState(state) {
+  return UPLOAD_ALLOWED_STATE_REGEX.test(String(state || "").trim());
+}
+
 // ─── Parse preview (without inserting) ─────────────────────────────────────
 
 /**
@@ -172,12 +259,20 @@ const previewLeads = async (req, res, next) => {
     const validRows = leads.length;
     const invalidRows = totalRows - validRows;
 
+    // Same state restriction applied at actual upload time — shown here so
+    // the admin sees, before committing, how many rows will actually import.
+    const karnatakaLeads = leads.filter((l) => isAllowedUploadState(l.state));
+    const otherStateRows = validRows - karnatakaLeads.length;
+
     res.json({
       data: {
         totalRows,
         validRows,
         invalidRows,
-        sample: leads.slice(0, 5).map(l => ({ name: l.name, email: l.email, phone: l.phone, company: l.company })),
+        karnatakaRows: karnatakaLeads.length,
+        otherStateRows,
+        allowedState: UPLOAD_ALLOWED_STATE,
+        sample: karnatakaLeads.slice(0, 5).map(l => ({ name: l.name, email: l.email, phone: l.phone, company: l.company, state: l.state })),
       },
     });
   } catch (err) { next(err); }
@@ -252,10 +347,29 @@ const uploadLeads = async (req, res, next) => {
     const validRows = leads.length;
     const invalidRows = totalRows - validRows;
 
-    if (leads.length === 0) throw new AppError("No valid leads found in the file. Make sure columns include at least a 'name' column.", 400, "NO_VALID_ROWS");
+    // ── State restriction ──────────────────────────────────────────────
+    // The file may contain leads from every state (a raw MCA/GST export).
+    // Only Karnataka rows are ever imported or handed to distributeLeads,
+    // so no other state's data reaches an assigned sales employee. This is
+    // enforced here — server-side, on every upload — not left to whoever
+    // prepares the file, and it cannot be bypassed via the request.
+    const otherStateLeads = leads.filter((l) => !isAllowedUploadState(l.state));
+    leads = leads.filter((l) => isAllowedUploadState(l.state));
+    const otherStateRows = otherStateLeads.length;
+    const karnatakaRows = leads.length;
 
-    // Stamp batch metadata
-    leads = leads.map(l => ({ ...l, totalInBatch: totalRows, validInBatch: validRows, skippedInBatch: invalidRows }));
+    if (leads.length === 0) {
+      throw new AppError(
+        `No ${UPLOAD_ALLOWED_STATE} leads found in the file. ${otherStateRows} row(s) from other states were excluded — only ${UPLOAD_ALLOWED_STATE} leads are imported.`,
+        400,
+        "NO_VALID_ROWS"
+      );
+    }
+
+    // Stamp batch metadata (reflects the full file, so the batch record
+    // still shows how many rows were in the source file vs. how many of
+    // those were actually Karnataka and got imported).
+    leads = leads.map(l => ({ ...l, totalInBatch: totalRows, validInBatch: validRows, skippedInBatch: invalidRows + otherStateRows }));
 
     const { leads: distributedLeads, salesTeam, note } = await distributeLeads(leads, req.user.userId, batchSize);
 
@@ -270,15 +384,17 @@ const uploadLeads = async (req, res, next) => {
         action: "LEAD_UPLOAD",
         module: "leads",
         recordLabel: uploadBatch,
-        newValue: { imported: inserted.length, salesTeamCount: salesTeam.length, batchSize },
+        newValue: { imported: inserted.length, otherStateExcluded: otherStateRows, salesTeamCount: salesTeam.length, batchSize },
         ipAddress: req.ip,
       });
-    } catch (_) {}
+    } catch (_) { }
 
     res.status(201).json({
       data: {
         imported: inserted.length,
         skipped: invalidRows,
+        otherStateExcluded: otherStateRows,
+        allowedState: UPLOAD_ALLOWED_STATE,
         totalRows,
         uploadBatch,
         uploadBatchTimestamp,
@@ -286,7 +402,8 @@ const uploadLeads = async (req, res, next) => {
         distribution: salesTeam,
         distributionNote: note,
         batchSize,
-        message: `Successfully imported ${inserted.length} lead${inserted.length !== 1 ? "s" : ""} and distributed across ${salesTeam.length} sales team member(s).`,
+        message: `Successfully imported ${inserted.length} ${UPLOAD_ALLOWED_STATE} lead${inserted.length !== 1 ? "s" : ""} and distributed across ${salesTeam.length} sales team member(s).`
+          + (otherStateRows > 0 ? ` ${otherStateRows} row(s) from other states were excluded.` : ""),
       },
     });
   } catch (err) { next(err); }
@@ -447,7 +564,7 @@ const updateLeadStatus = async (req, res, next) => {
         newValue: { status },
         ipAddress: req.ip,
       });
-    } catch (_) {}
+    } catch (_) { }
 
     res.json({ data: lead });
   } catch (err) { next(err); }
@@ -498,7 +615,7 @@ const reassignLead = async (req, res, next) => {
         newValue: { assignedTo: employeeId, reason },
         ipAddress: req.ip,
       });
-    } catch (_) {}
+    } catch (_) { }
 
     res.json({ data: lead });
   } catch (err) { next(err); }
