@@ -2,7 +2,7 @@
 const { Lead } = require("../models/Lead");
 const { AppError } = require("../middleware/errorHandler");
 const { isElevated } = require("../utils/roles");
-const { parsePagination, assertObjectId } = require("../utils/helpers");
+const { parsePagination, assertObjectId, startOfDay, endOfDay } = require("../utils/helpers");
 
 const UPLOAD_ROLES = ["PROJECT_HEAD"];
 const VALID_STATUSES = ["NEW", "CONTACTED", "INTERESTED", "NOT_INTERESTED", "CONVERTED", "LOST"];
@@ -301,7 +301,7 @@ const uploadLeads = async (req, res, next) => {
 const getLeads = async (req, res, next) => {
   try {
     const { page, limit, skip } = parsePagination(req.query, 50);
-    const { status, search, uploadBatch, assignedTo } = req.query;
+    const { status, search, uploadBatch, assignedTo, leadDate } = req.query;
 
     const query = {};
 
@@ -312,6 +312,25 @@ const getLeads = async (req, res, next) => {
       else return res.json({ data: [], meta: { total: 0, page, limit, totalPages: 0 } });
     } else if (assignedTo) {
       query.assignedTo = assignedTo;
+    }
+
+    if (leadDate === "TODAY") {
+      const now = new Date();
+      query.assignedAt = { $gte: startOfDay(now), $lte: endOfDay(now) };
+    } else if (leadDate === "PREVIOUS") {
+      const now = new Date();
+      query.assignedAt = { $lt: startOfDay(now) };
+    } else if (leadDate && leadDate !== "ALL") {
+      // Support specific date string e.g. YYYY-MM-DD
+      const d = new Date(leadDate);
+      if (!isNaN(d.getTime())) {
+        query.assignedAt = { $gte: startOfDay(d), $lte: endOfDay(d) };
+      }
+    } else if (req.query.date) {
+      const d = new Date(req.query.date);
+      if (!isNaN(d.getTime())) {
+        query.assignedAt = { $gte: startOfDay(d), $lte: endOfDay(d) };
+      }
     }
 
     if (status) query.status = status;
