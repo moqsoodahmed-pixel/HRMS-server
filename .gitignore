@@ -6,3 +6,7 @@ uploads/
 *.log
 scripts/copyAtlasToLocal.js
 copyAtlasToLocal.js
+temp_*.js
+test_*.js
+scripts/temp_*
+scripts/test_*

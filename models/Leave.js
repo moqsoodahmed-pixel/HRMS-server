@@ -63,6 +63,7 @@ const leaveRequestSchema = new mongoose_1.Schema({
     totalDays: { type: Number, required: true },
     isHalfDay: { type: Boolean, default: false },
     halfDayType: { type: String, enum: ['FIRST_HALF', 'SECOND_HALF'] },
+    subType: { type: String },
     reason: { type: String, required: true },
     status: {
         type: String,

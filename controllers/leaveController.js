@@ -4,6 +4,7 @@ exports.getLeaveStats = exports.deleteHoliday = exports.createHoliday = exports.
 const mongoose_1 = require("mongoose");
 const Leave_1 = require("../models/Leave");
 const Employee_1 = require("../models/Employee");
+const User_1 = require("../models/User");
 const NotificationAudit_1 = require("../models/NotificationAudit");
 const auditService_1 = require("../services/auditService");
 const errorHandler_1 = require("../middleware/errorHandler");
@@ -15,9 +16,10 @@ const APPROVER_ROLES = roles_1.LEAVE_APPROVER_ROLES;
 
 const leaveRequestSchema = zod_1.z.object({
     leaveType: zod_1.z.string().min(1, 'Leave type is required'),
+    subType: zod_1.z.string().optional().or(zod_1.z.literal('')),
     startDate: zod_1.z.string().min(1, 'Start date is required'),
     endDate: zod_1.z.string().min(1, 'End date is required'),
-    reason: zod_1.z.string().min(3, 'Please give a reason of at least 3 characters'),
+    reason: zod_1.z.string().optional().or(zod_1.z.literal('')),
     isHalfDay: zod_1.z.boolean().optional(),
     halfDayType: zod_1.z.enum(['FIRST_HALF', 'SECOND_HALF']).optional().or(zod_1.z.literal('')),
     employee: zod_1.z.string().optional(),
@@ -104,8 +106,23 @@ async function notify(userId, payload) {
     }
 }
 
+const DEFAULT_LEAVE_TYPES = [
+    { name: 'Casual', code: 'CASUAL', description: 'Casual leave for personal or short-notice matters', maxDaysPerYear: 12, isPaid: true, isActive: true },
+    { name: 'Annual', code: 'ANNUAL', description: 'Annual leave for planned vacations and personal events', maxDaysPerYear: 18, isPaid: true, isActive: true },
+];
+
+async function ensureDefaultLeaveTypes() {
+    for (const item of DEFAULT_LEAVE_TYPES) {
+        const existing = await Leave_1.LeaveType.findOne({ code: item.code });
+        if (!existing) {
+            await Leave_1.LeaveType.create(item);
+        }
+    }
+}
+
 const getLeaveTypes = async (req, res, next) => {
     try {
+        await ensureDefaultLeaveTypes();
         const includeInactive = req.query.includeInactive === 'true'
             && roles_1.HR_ROLES.includes(req.user?.role);
         const types = await Leave_1.LeaveType.find(includeInactive ? {} : { isActive: true }).sort({ name: 1 });
@@ -238,25 +255,55 @@ const createLeaveRequest = async (req, res, next) => {
             throw new errorHandler_1.AppError(`Only ${balance.remainingDays} day(s) of ${type.name} remain for ${year}`, 400, 'INSUFFICIENT_BALANCE');
         }
 
+        const subType = (data.subType || '').trim();
+        const rawReason = (data.reason || '').trim();
+
+        if (subType.toLowerCase() === 'others') {
+            if (!rawReason || rawReason.length < 3) {
+                throw new errorHandler_1.AppError('Please enter a reason for "Others" (at least 3 characters)', 400, 'VALIDATION_ERROR');
+            }
+        }
+
+        const finalReason = rawReason || subType || type.name;
+
         const request = await Leave_1.LeaveRequest.create({
             employee: employeeId,
             leaveType: data.leaveType,
+            subType: subType || undefined,
             startDate,
             endDate,
             totalDays,
             isHalfDay: data.isHalfDay || false,
             halfDayType: data.halfDayType || undefined,
-            reason: data.reason,
+            reason: finalReason,
             status: 'PENDING',
         });
         await recalcBalance(employeeId, data.leaveType, year);
 
         const employee = await Employee_1.Employee.findById(employeeId).populate('manager', 'user fullName');
+        
+        const recipientUserIds = new Set();
         if (employee?.manager?.user) {
-            await notify(employee.manager.user, {
+            recipientUserIds.add(employee.manager.user.toString());
+        }
+
+        // Notify HR, CTO, FOUNDER_CEO, and SUPER_ADMIN so they can review and approve/reject
+        const approvers = await User_1.User.find({
+            role: { $in: ['FOUNDER_CEO', 'SUPER_ADMIN', 'CTO', 'HR_ADMIN'] },
+            isActive: true,
+        }).select('_id').lean();
+
+        for (const approver of approvers) {
+            if (approver._id.toString() !== req.user?.userId) {
+                recipientUserIds.add(approver._id.toString());
+            }
+        }
+
+        for (const userId of recipientUserIds) {
+            await notify(userId, {
                 type: 'LEAVE_REQUEST',
                 title: 'New leave request',
-                message: `${employee.fullName} requested ${totalDays} day(s) of ${type.name}.`,
+                message: `${employee?.fullName || 'An employee'} requested ${totalDays} day(s) of ${type.name}${subType ? ` (${subType})` : ''}.`,
                 relatedModel: 'LeaveRequest',
                 relatedId: request._id,
             });
@@ -272,14 +319,14 @@ const createLeaveRequest = async (req, res, next) => {
 };
 exports.createLeaveRequest = createLeaveRequest;
 
-/** Managers may only act on their own direct reports, and never on their own request. */
+/** Managers may only act on their own direct reports, and never on their own request. HR and CTO can act company-wide. */
 async function assertCanApprove(req, request) {
-    if (roles_1.HR_ROLES.includes(req.user?.role)) return;
     const self = await Employee_1.Employee.findOne({ user: req.user?.userId }).select('_id').lean();
-    if (!self) throw new errorHandler_1.AppError('No employee profile is linked to your account', 403, 'FORBIDDEN');
-    if (String(request.employee._id || request.employee) === String(self._id)) {
+    if (self && String(request.employee._id || request.employee) === String(self._id)) {
         throw new errorHandler_1.AppError('You cannot action your own leave request', 403, 'FORBIDDEN');
     }
+    if (roles_1.HR_ROLES.includes(req.user?.role)) return;
+    if (!self) throw new errorHandler_1.AppError('No employee profile is linked to your account', 403, 'FORBIDDEN');
     const target = await Employee_1.Employee.findById(request.employee._id || request.employee).select('manager').lean();
     if (!target || String(target.manager || '') !== String(self._id)) {
         throw new errorHandler_1.AppError('You can only action leave for your direct reports', 403, 'FORBIDDEN');
