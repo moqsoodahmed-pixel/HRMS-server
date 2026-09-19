@@ -594,9 +594,72 @@ async function processDocument(fileBuffer, mimeType, category, originalName = ''
         }
         break;
       }
-      case 'PAN Card':
+      case 'PAN Card': {
         structured = parsePAN(text);
+
+        // Multi-region enhancement for image uploads if full-page OCR missed PAN number or name/dob
+        const isPdf = mimeType === 'application/pdf' || originalName.toLowerCase().endsWith('.pdf');
+        if (!isPdf && fileBuffer) {
+          const dims = getImageDimensions(fileBuffer);
+          if (dims && dims.width > 300 && dims.height > 300) {
+            let worker = null;
+            try {
+              // 1. If PAN number missing, scan middle region (excluding right side QR code)
+              if (!structured.panNumber) {
+                worker = await Tesseract.createWorker('eng');
+                const panRect = {
+                  left: Math.round(dims.width * 0.20),
+                  top: Math.round(dims.height * 0.35),
+                  width: Math.round(dims.width * 0.40),
+                  height: Math.round(dims.height * 0.15),
+                };
+                const panRes = await worker.recognize(fileBuffer, { rectangle: panRect });
+                const pText = (panRes.data?.text || '').replace(/\s+/g, '');
+                const m = pText.match(/([A-Z]{5}[0-9]{4}[A-Z])/i);
+                if (m) structured.panNumber = m[1].toUpperCase();
+              }
+
+              // 2. If Name missing or noisy
+              if (!structured.fullName || structured.fullName.length < 3) {
+                if (!worker) worker = await Tesseract.createWorker('eng');
+                const nameRect = {
+                  left: Math.round(dims.width * 0.04),
+                  top: Math.round(dims.height * 0.50),
+                  width: Math.round(dims.width * 0.25),
+                  height: Math.round(dims.height * 0.15),
+                };
+                const nameRes = await worker.recognize(fileBuffer, { rectangle: nameRect });
+                const nLines = (nameRes.data?.text || '').split('\n').map((l) => cleanName(l)).filter((l) => l.length >= 3);
+                for (const cand of nLines) {
+                  if (!/Name|Permanent|Account|Income|Tax|Father/i.test(cand)) {
+                    structured.fullName = cand;
+                    break;
+                  }
+                }
+              }
+
+              // 3. If DOB missing
+              if (!structured.dob) {
+                if (!worker) worker = await Tesseract.createWorker('eng');
+                const dobRect = {
+                  left: Math.round(dims.width * 0.04),
+                  top: Math.round(dims.height * 0.83),
+                  width: Math.round(dims.width * 0.22),
+                  height: Math.round(dims.height * 0.14),
+                };
+                const dobRes = await worker.recognize(fileBuffer, { rectangle: dobRect });
+                const dobM = (dobRes.data?.text || '').match(/\b([0-9]{2}\/[0-9]{2}\/[0-9]{4})\b/);
+                if (dobM) structured.dob = dobM[1];
+              }
+            } catch (pErr) {
+              console.warn('[documentIntelligence] PAN region OCR fallback error:', pErr.message);
+            } finally {
+              if (worker) await worker.terminate();
+            }
+          }
+        }
         break;
+      }
       case 'Bank Account Details':
       case 'Cancelled Cheque':
         structured = parseBank(text);
