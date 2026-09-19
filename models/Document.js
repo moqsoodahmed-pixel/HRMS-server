@@ -59,6 +59,18 @@ const documentSchema = new mongoose_1.Schema({
     version: { type: Number, default: 1 },
     isArchived: { type: Boolean, default: false },
     uploadedBy: { type: mongoose_1.Schema.Types.ObjectId, ref: 'User', required: true },
+    extractedData: { type: mongoose_1.Schema.Types.Mixed, default: null },
+    ocrStatus: {
+        type: String,
+        enum: ['PENDING', 'COMPLETED', 'SKIPPED', 'FAILED'],
+        default: 'PENDING',
+    },
+    extractedDataAudit: [{
+        editedBy: { type: mongoose_1.Schema.Types.ObjectId, ref: 'User' },
+        editedAt: { type: Date, default: Date.now },
+        previousData: { type: mongoose_1.Schema.Types.Mixed },
+        updatedData: { type: mongoose_1.Schema.Types.Mixed },
+    }],
 }, { timestamps: true });
 const identityDocumentSchema = new mongoose_1.Schema({
     employee: { type: mongoose_1.Schema.Types.ObjectId, ref: 'Employee', required: true },

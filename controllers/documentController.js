@@ -1,7 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getDocumentChecklist = exports.getDocumentStats = exports.listDocuments = exports.revealIdentityNumber = exports.createIdentityDocument = exports.getIdentityDocuments = exports.archiveDocument = exports.rejectDocument = exports.verifyDocument = exports.downloadDocument = exports.uploadDocument = exports.getDocuments = void 0;
+exports.updateExtractedData = exports.getDocumentChecklist = exports.getDocumentStats = exports.listDocuments = exports.revealIdentityNumber = exports.createIdentityDocument = exports.getIdentityDocuments = exports.archiveDocument = exports.rejectDocument = exports.verifyDocument = exports.downloadDocument = exports.uploadDocument = exports.getDocuments = void 0;
 const Document_1 = require("../models/Document");
+const documentIntelligenceService = require("../services/documentIntelligenceService");
 const Employee_1 = require("../models/Employee");
 const auditService_1 = require("../services/auditService");
 const storageService_1 = require("../services/storageService");
@@ -263,6 +264,20 @@ const uploadDocument = async (req, res, next) => {
         if (!employee) throw new errorHandler_1.AppError('Employee not found', 404, 'NOT_FOUND');
 
         const filePath = await storageService_1.storageService.upload(req.file, `documents/${data.employeeId}`);
+
+        let extractionResult = { ocrStatus: 'SKIPPED', extractedData: null };
+        try {
+            extractionResult = await documentIntelligenceService.processDocument(
+                req.file.buffer,
+                req.file.mimetype,
+                data.category,
+                req.file.originalname
+            );
+        } catch (ocrErr) {
+            console.error('OCR extraction failed during upload:', ocrErr.message);
+            extractionResult = { ocrStatus: 'FAILED', extractedData: {} };
+        }
+
         const doc = await Document_1.EmployeeDocument.create({
             employee: data.employeeId,
             category: data.category,
@@ -276,6 +291,8 @@ const uploadDocument = async (req, res, next) => {
             notes: data.notes || undefined,
             status: 'PENDING',
             uploadedBy: req.user?.userId,
+            extractedData: extractionResult.extractedData || null,
+            ocrStatus: extractionResult.ocrStatus || 'PENDING',
         });
         await auditService_1.auditService.log(req, {
             action: 'DOCUMENT_UPLOADED', module: 'DOCUMENTS',
@@ -490,3 +507,63 @@ const getDocumentChecklist = async (req, res, next) => {
     catch (err) { next(err); }
 };
 exports.getDocumentChecklist = getDocumentChecklist;
+
+const updateExtractedData = async (req, res, next) => {
+    try {
+        const { id } = req.params;
+        (0, helpers_1.assertObjectId)(id, 'document id');
+        const doc = await Document_1.EmployeeDocument.findById(id);
+        if (!doc) throw new errorHandler_1.AppError('Document not found', 404, 'NOT_FOUND');
+
+        // Check permissions: elevated roles or HR_ADMIN may edit, or the employee who owns the document
+        const callerEmp = await Employee_1.Employee.findOne({ user: req.user?.userId }).select('_id');
+        const isOwner = callerEmp && String(doc.employee) === String(callerEmp._id);
+        const canManage = roles_1.isElevated(req.user?.role) || DOCUMENT_FULL_ACCESS_ROLES.includes(req.user?.role);
+
+        if (!isOwner && !canManage) {
+            throw new errorHandler_1.AppError('You can only edit extracted information for your own documents', 403, 'FORBIDDEN');
+        }
+
+        const incoming = req.body?.extractedData;
+        if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) {
+            throw new errorHandler_1.AppError('Invalid extracted data object provided', 400, 'VALIDATION_ERROR');
+        }
+
+        // Sanitize: stringify and trim incoming fields
+        const sanitized = {};
+        for (const [key, val] of Object.entries(incoming)) {
+            if (typeof val === 'string') {
+                sanitized[key] = val.trim();
+            } else if (val === null || val === undefined) {
+                sanitized[key] = '';
+            } else {
+                sanitized[key] = String(val).trim();
+            }
+        }
+
+        const previousData = doc.extractedData ? { ...doc.extractedData } : {};
+        doc.extractedData = sanitized;
+        doc.extractedDataAudit = doc.extractedDataAudit || [];
+        doc.extractedDataAudit.push({
+            editedBy: req.user?.userId,
+            editedAt: new Date(),
+            previousData,
+            updatedData: sanitized,
+        });
+
+        await doc.save();
+
+        await auditService_1.auditService.log(req, {
+            action: 'DOCUMENT_EXTRACTED_DATA_UPDATED',
+            module: 'DOCUMENTS',
+            recordId: id,
+            recordLabel: doc.name,
+            previousValue: previousData,
+            newValue: sanitized,
+        });
+
+        res.json({ data: doc, message: 'Extracted details updated successfully' });
+    }
+    catch (err) { next(err); }
+};
+exports.updateExtractedData = updateExtractedData;

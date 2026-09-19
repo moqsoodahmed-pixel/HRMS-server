@@ -10,7 +10,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
  * document system.
  */
 const REQUIRED_DOCUMENT_TYPES = [
-    { category: 'Aadhaar Card', label: 'Government ID / Identity Proof', required: true },
+    { category: 'Aadhaar Card', label: 'Aadhaar ID', required: true },
     { category: 'Address Proof', label: 'Address Proof', required: true },
     { category: 'PAN Card', label: 'PAN / Tax Document', required: true },
     { category: 'Bank Account Details', label: 'Bank Account Details', required: true },

@@ -138,6 +138,7 @@ router.patch('/documents/:id/reject', authenticate, authorize(...HR), docc.rejec
 router.patch('/documents/:id/archive', authenticate, authorize(...HR), docc.archiveDocument);
 router.get('/employees/:id/documents', authenticate, requireOnboardingApproved(), docc.getDocuments);
 router.get('/employees/:id/documents/checklist', authenticate, requireOnboardingApproved(), docc.getDocumentChecklist);
+router.patch('/documents/:id/extracted-data', authenticate, requireOnboardingApproved(), docc.updateExtractedData);
 router.get('/employees/:id/identity', authenticate, docc.getIdentityDocuments);
 router.post('/employees/:id/identity', authenticate, authorize(...HR), docc.createIdentityDocument);
 router.post('/employees/:id/identity/:docType/reveal', authenticate, authorize(...HR), docc.revealIdentityNumber);

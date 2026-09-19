@@ -10,3 +10,7 @@ temp_*.js
 test_*.js
 scripts/temp_*
 scripts/test_*
+add_hr_*.js
+scripts/add_hr_*
+scripts/check_atlas*
+*.traineddata
