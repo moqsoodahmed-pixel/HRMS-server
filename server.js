@@ -11,11 +11,28 @@ const database_1 = require("./config/database");
 const PORT = parseInt(process.env.PORT || '5000');
 async function startServer() {
     await (0, database_1.connectDatabase)();
-    app_1.default.listen(PORT, () => {
+    const server = app_1.default.listen(PORT, () => {
         console.log(`🚀 DutyLaunch HRMS Server running on port ${PORT}`);
         console.log(`📡 Environment: ${process.env.NODE_ENV || 'development'}`);
         console.log(`🌐 Client URL: ${process.env.CLIENT_URL || 'http://localhost:5173'}`);
     });
+
+    server.on('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+            console.error(`❌ Port ${PORT} is already in use by another process.`);
+        } else {
+            console.error('Server error:', err);
+        }
+        process.exit(1);
+    });
+
+    const cleanup = () => {
+        server.close(() => {
+            process.exit(0);
+        });
+    };
+    process.once('SIGINT', cleanup);
+    process.once('SIGTERM', cleanup);
 }
 startServer().catch((err) => {
     console.error('Failed to start server:', err);

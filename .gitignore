@@ -1,4 +1,8 @@
 node_modules/
 .env
+.env.*
+*.bak
 uploads/
 *.log
+scripts/copyAtlasToLocal.js
+copyAtlasToLocal.js

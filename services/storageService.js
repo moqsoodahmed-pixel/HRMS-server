@@ -94,24 +94,26 @@ function parseCloudinaryRef(filePath) {
 exports.storageService = {
     async upload(file, subDir = '') {
         if (STORAGE_PROVIDER === 'cloudinary') {
-            const folder = ['hrms', subDir].filter(Boolean).join('/');
-            // resource_type 'auto' → Cloudinary stores images/video as such and
-            // everything else (PDF, docx, etc.) as 'raw', automatically.
-            // type + access_mode 'authenticated' → the file is NEVER reachable by
-            // a guessable/public URL, only via a freshly-signed, time-limited URL
-            // generated on demand inside download() below — and only after
-            // documentController's assertCanAccessEmployee has already approved
-            // the caller for THIS specific employee's documents.
-            const result = await uploadBufferToCloudinary(file.buffer, {
-                folder,
-                resource_type: 'auto',
-                type: 'authenticated',
-                access_mode: 'authenticated',
-                use_filename: false,
-                unique_filename: true,
-                overwrite: false,
-            });
-            return `${CLOUDINARY_PREFIX}${result.resource_type}:${result.public_id}`;
+            try {
+                const folder = ['hrms', subDir].filter(Boolean).join('/');
+                const result = await uploadBufferToCloudinary(file.buffer, {
+                    folder,
+                    resource_type: 'auto',
+                    type: 'authenticated',
+                    access_mode: 'authenticated',
+                    use_filename: false,
+                    unique_filename: true,
+                    overwrite: false,
+                });
+                return `${CLOUDINARY_PREFIX}${result.resource_type}:${result.public_id}`;
+            } catch (err) {
+                const isNetworkError = err.code === 'ENOTFOUND' || err.code === 'ETIMEDOUT' || err.code === 'ECONNREFUSED' || (err.message && /network|getaddrinfo|timeout/i.test(err.message));
+                if (process.env.NODE_ENV !== 'production' && isNetworkError) {
+                    console.warn('⚠️  Cloudinary unreachable (offline) — falling back to local disk storage for this file');
+                } else {
+                    throw err;
+                }
+            }
         }
         // ---- original local-disk behaviour, byte-for-byte unchanged ----
         const targetDir = path_1.default.join(UPLOAD_DIR, subDir);
