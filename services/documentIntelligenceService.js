@@ -1,6 +1,41 @@
 "use strict";
 
-const { PDFParse } = require('pdf-parse');
+// Polyfill process.getBuiltinModule and web primitives for Node.js <= 18 compatibility (required by pdf-parse v2)
+if (typeof process.getBuiltinModule !== 'function') {
+  process.getBuiltinModule = function (name) {
+    try {
+      return require(name);
+    } catch {
+      return undefined;
+    }
+  };
+}
+if (typeof globalThis.DOMMatrix === 'undefined') {
+  globalThis.DOMMatrix = class DOMMatrix {
+    constructor() {
+      this.a = 1; this.b = 0; this.c = 0; this.d = 1; this.e = 0; this.f = 0;
+    }
+  };
+}
+if (typeof globalThis.ImageData === 'undefined') {
+  globalThis.ImageData = class ImageData {
+    constructor(w, h) {
+      this.width = w; this.height = h; this.data = new Uint8ClampedArray(w * h * 4);
+    }
+  };
+}
+if (typeof globalThis.Path2D === 'undefined') {
+  globalThis.Path2D = class Path2D {};
+}
+
+let PDFParse = null;
+try {
+  const pdfParsePkg = require('pdf-parse');
+  PDFParse = pdfParsePkg.PDFParse || pdfParsePkg;
+} catch (loadErr) {
+  console.warn('[documentIntelligence] Warning loading pdf-parse:', loadErr.message);
+}
+
 const Tesseract = require('tesseract.js');
 
 /**
@@ -71,7 +106,7 @@ function cleanName(raw) {
 async function extractTextFromBuffer(fileBuffer, mimeType = '', originalName = '') {
   const isPdf = mimeType === 'application/pdf' || originalName.toLowerCase().endsWith('.pdf');
 
-  if (isPdf) {
+  if (isPdf && PDFParse) {
     try {
       const uint8 = new Uint8Array(fileBuffer);
       const parser = new PDFParse(uint8);
