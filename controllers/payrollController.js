@@ -338,21 +338,26 @@ const downloadPayslip = async (req, res, next) => {
             }
         }
 
-        let buffer;
-        if (payslip.pdfPath) {
-            try {
-                buffer = await storageService_1.storageService.download(payslip.pdfPath);
-            } catch {
-                buffer = null;
-            }
-        }
-        if (!buffer) {
-            // Stored file missing (or PDF generation failed earlier) — render on demand.
-            buffer = await pdfService_1.pdfService.generatePayslip(payslip, payslip.employee);
+        const name = `payslip-${payslip.employee?.employeeCode || id}-${payslip.month}-${payslip.year}.pdf`;
+
+        // Always render fresh from the current template rather than trusting a
+        // cached copy in storage: an old cached PDF (e.g. from before a
+        // template/branding update — logo, GST number, layout, etc.) would
+        // otherwise keep being served forever, since nothing else invalidates it.
+        const buffer = await pdfService_1.pdfService.generatePayslip(payslip, payslip.employee);
+
+        // Best-effort refresh of the cached copy so storage stays in sync with
+        // what was just served. Never let a storage hiccup break the download.
+        try {
+            payslip.pdfPath = await storageService_1.storageService.upload({
+                buffer, originalname: name, mimetype: 'application/pdf',
+            }, 'payslips');
+            await payslip.save();
+        } catch (err) {
+            console.error('Payslip PDF cache refresh failed:', err.message);
         }
 
         await auditService_1.auditService.log(req, { action: 'PAYSLIP_DOWNLOADED', module: 'PAYROLL', recordId: id });
-        const name = `payslip-${payslip.employee?.employeeCode || id}-${payslip.month}-${payslip.year}.pdf`;
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
         res.setHeader('Content-Length', buffer.length);
