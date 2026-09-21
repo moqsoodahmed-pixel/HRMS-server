@@ -90,11 +90,11 @@ exports.pdfService = {
         const companyAddress = org?.organization?.address || '';
         const companyEmail = org?.organization?.contactEmail || '';
         const companyPhone = org?.organization?.contactPhone || '';
-        // GST is not yet a field on OrgSettings. Reads org?.organization?.gstNumber
-        // so that once you add that field (Settings page + OrgSettings schema) it
-        // is picked up automatically with zero further changes here. Until then a
-        // clearly-marked demo number is shown so the layout/spacing is correct.
-        const gstNumber = org?.organization?.gstNumber || '29AAAAA0000A1Z5 (DEMO - update in Settings)';
+        // Reads org?.organization?.gstNumber first (once that field exists
+        // on OrgSettings / a Settings page, it's picked up automatically
+        // with zero further changes here); falls back to the company's
+        // real GST number below.
+        const gstNumber = org?.organization?.gstNumber || '29AAMCD2048Q1ZY';
 
         const bank = employee?.onboardingData?.bank || {};
 
