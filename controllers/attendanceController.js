@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.markAttendance = exports.getMyToday = exports.getAttendanceStats = exports.updateAttendance = exports.checkOut = exports.checkIn = exports.getAttendance = void 0;
+exports.markAttendance = exports.getMyToday = exports.getAttendanceStats = exports.updateAttendance = exports.undoCheckOut = exports.checkOut = exports.checkIn = exports.getAttendance = void 0;
 const Attendance_1 = require("../models/Attendance");
 const Employee_1 = require("../models/Employee");
 const Leave_1 = require("../models/Leave");
@@ -16,6 +16,12 @@ const DEFAULT_WORK_START_MINUTE = parseInt(process.env.WORK_START_MINUTE || '30'
 const DEFAULT_WORK_END_HOUR = parseInt(process.env.WORK_END_HOUR || '18', 10);
 const DEFAULT_WORK_END_MINUTE = parseInt(process.env.WORK_END_MINUTE || '30', 10);
 const DEFAULT_WINDOW = { startHour: DEFAULT_WORK_START_HOUR, startMinute: DEFAULT_WORK_START_MINUTE, endHour: DEFAULT_WORK_END_HOUR, endMinute: DEFAULT_WORK_END_MINUTE };
+
+// How long an employee has to self-undo an accidental check-out, in minutes,
+// counted from the moment they checked out. Keeps the "oops, wrong button"
+// case self-service while still requiring an HR-approved correction request
+// for anything older than this (see attendanceRequestController.js).
+const UNDO_CHECKOUT_GRACE_MINUTES = parseInt(process.env.UNDO_CHECKOUT_GRACE_MINUTES || '10', 10);
 
 function parseHHmm(value) {
     if (!value) return null;
@@ -256,11 +262,63 @@ const checkOut = async (req, res, next) => {
             record.earlyExitMinutes
         ).catch((e) => console.error('[Attendance] Clock-out Telegram notify failed:', e?.message || e));
 
-        res.json({ data: record });
+        res.json({ data: record, meta: { undoCheckOutAvailableUntil: new Date(record.checkOut.getTime() + UNDO_CHECKOUT_GRACE_MINUTES * 60000) } });
     }
     catch (err) { next(err); }
 };
 exports.checkOut = checkOut;
+
+/**
+ * Self-service "undo" for an accidental check-out. Only works within
+ * UNDO_CHECKOUT_GRACE_MINUTES of the check-out itself — after that window
+ * the employee must go through the HR-approved correction flow
+ * (attendanceRequestController.createRequest) so there's always an audit
+ * trail for edits to already-settled attendance.
+ */
+const undoCheckOut = async (req, res, next) => {
+    try {
+        const emp = await Employee_1.Employee.findOne({ user: req.user?.userId });
+        if (!emp) throw new errorHandler_1.AppError('No employee profile is linked to your account', 404, 'NO_EMPLOYEE_PROFILE');
+        const todayStart = (0, helpers_1.startOfDay)(new Date());
+        const record = await Attendance_1.Attendance.findOne({ employee: emp._id, date: { $gte: todayStart } });
+        if (!record?.checkOut) {
+            res.status(400).json({ error: { code: 'NOT_CHECKED_OUT', message: 'You have not checked out today' } });
+            return;
+        }
+        const elapsedMinutes = (Date.now() - record.checkOut.getTime()) / 60000;
+        if (elapsedMinutes > UNDO_CHECKOUT_GRACE_MINUTES) {
+            res.status(400).json({
+                error: {
+                    code: 'UNDO_WINDOW_EXPIRED',
+                    message: `You can only undo a check-out within ${UNDO_CHECKOUT_GRACE_MINUTES} minutes of checking out. Please submit an attendance correction request instead.`,
+                },
+            });
+            return;
+        }
+        const previousCheckOut = record.checkOut;
+        record.checkOut = undefined;
+        // recomputeDerivedFields only overwrites work/earlyExit fields when both
+        // checkIn and checkOut are present, so clear the stale check-out-derived
+        // values explicitly rather than leaving them pointing at the undone check-out.
+        record.isEarlyExit = false;
+        record.earlyExitMinutes = 0;
+        record.workHours = undefined;
+        record.breakDurationMinutes = 0;
+        recomputeDerivedFields(record, await getWorkWindow());
+        await record.save();
+        await auditService_1.auditService.log(req, {
+            action: 'ATTENDANCE_CHECK_OUT_UNDONE',
+            module: 'ATTENDANCE',
+            recordId: record._id.toString(),
+            recordLabel: emp.fullName,
+            oldValue: { checkOut: previousCheckOut },
+            newValue: { checkOut: null },
+        });
+        res.json({ data: record });
+    }
+    catch (err) { next(err); }
+};
+exports.undoCheckOut = undoCheckOut;
 
 /** Employee starts their lunch / rest break for the day. */
 const breakIn = async (req, res, next) => {

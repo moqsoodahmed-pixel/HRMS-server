@@ -98,6 +98,7 @@ router.get('/attendance/me/today', authenticate, requireOnboardingApproved(), ac
 router.post('/attendance', authenticate, authorize(...HR), ac.markAttendance);
 router.post('/attendance/checkin', authenticate, requireOnboardingApproved(), ac.checkIn);
 router.post('/attendance/checkout', authenticate, requireOnboardingApproved(), ac.checkOut);
+router.post('/attendance/checkout/undo', authenticate, requireOnboardingApproved(), ac.undoCheckOut);
 router.post('/attendance/break/start', authenticate, requireOnboardingApproved(), ac.breakIn);
 router.post('/attendance/break/end', authenticate, requireOnboardingApproved(), ac.breakOut);
 router.patch('/attendance/:id', authenticate, authorize(...HR), ac.updateAttendance);
