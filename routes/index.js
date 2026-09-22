@@ -27,6 +27,7 @@ const performanceController = require("../controllers/performanceController");
 const exitRequestController = require("../controllers/exitRequestController");
 const orgSettingsController = require("../controllers/orgSettingsController");
 const leadController = require("../controllers/leadController");
+const diagnosticsController = require("../controllers/diagnosticsController");
 const dailyReportController = require("../controllers/dailyReportController");
 const appointmentLetterController = require("../controllers/appointmentLetterController");
 
@@ -246,6 +247,12 @@ router.get('/settings', authenticate, authorize(), orgC.getSettings);
 router.patch('/settings', authenticate, authorize(), orgC.updateSettings);
 router.post('/settings/telegram/test', authenticate, authorize(), orgC.testTelegramNotification);
 router.post('/settings/telegram/test-daily-report', authenticate, authorize(), orgC.testDailyReportTelegramNotification);
+
+// ─── Data Health Check ────────────────────────────────────────────────────
+// Read-only DB counts, surfaced through the app instead of requiring direct
+// MongoDB Atlas access. authorize() with no list = elevated roles only
+// (FOUNDER_CEO/CTO/SUPER_ADMIN) — see diagnosticsController.js.
+router.get('/diagnostics/data-health', authenticate, authorize(), diagnosticsController.getDataHealth);
 
 // ─── Sales Leads ─────────────────────────────────────────────────────────────
 // NOTE: specific sub-paths BEFORE /:id to avoid route conflicts
