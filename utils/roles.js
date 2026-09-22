@@ -54,11 +54,15 @@ const FINANCE_ROLES = [...ELEVATED_ROLES, 'FINANCE'];
 // payroll). IT_HEAD/PROJECT_HEAD/MANAGER are deliberately never added here —
 // no team- or department-head role gets company payroll access.
 const PAYROLL_VIEW_ROLES = [...ELEVATED_ROLES, 'HR_ADMIN', 'FINANCE', 'DIRECTOR'];
-// Direct salary/allowance writes stay with the roles that already had them
-// (the elevated tier and FINANCE, who process payroll). HR_ADMIN never
-// appears here — a compensation change from HR always goes through the
-// request/approval workflow instead. See compensationController.
-const PAYROLL_WRITE_ROLES = [...ELEVATED_ROLES, 'FINANCE'];
+// Direct salary/allowance writes: the elevated tier, FINANCE, and HR_ADMIN.
+// HR administers day-to-day payroll operations here (entering a salary
+// structure, generating/reissuing payslips) — this is HR's own operational
+// data entry, not a pay-RATE decision. Changing what someone's salary
+// actually IS still only ever happens through the separate compensation
+// request/approval workflow below (COMPENSATION_REQUESTER/APPROVER_ROLES),
+// where HR can request a change but only FOUNDER_CEO/CTO can approve it —
+// that separation-of-duties check is untouched by this list.
+const PAYROLL_WRITE_ROLES = [...ELEVATED_ROLES, 'FINANCE', 'HR_ADMIN'];
 // Only the platform-administrator tier may approve or reject a compensation
 // change — this is the enforcement point for "HR can request, only
 // FOUNDER_CEO/CTO can approve."
