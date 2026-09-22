@@ -7,6 +7,7 @@ exports.authorizeOwnerOrAdmin = exports.authorize = exports.authenticate = void 
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const { isElevated } = require("../utils/roles");
 const { AUTH_COOKIE_NAME } = require("../utils/cookieConfig");
+const { User } = require("../models/User");
 
 /**
  * Safe, secret-free diagnostics for the exact failure mode described in the
@@ -20,7 +21,7 @@ function logAuthFailure(req, { tokenPresent, errName }) {
     console.warn(`[auth] 401 on ${req.method} ${req.originalUrl} — ${detail}`);
 }
 
-const authenticate = (req, res, next) => {
+const authenticate = async (req, res, next) => {
     const token = req.cookies?.[AUTH_COOKIE_NAME] || req.headers.authorization?.replace('Bearer ', '');
     if (!token) {
         logAuthFailure(req, { tokenPresent: false });
@@ -29,7 +30,23 @@ const authenticate = (req, res, next) => {
     }
     try {
         const payload = jsonwebtoken_1.default.verify(token, process.env.JWT_SECRET);
-        req.user = payload;
+        // Re-read this account's CURRENT role (and active state) from the
+        // database on every request instead of trusting whatever role was
+        // baked into the JWT back when the person logged in. Without this,
+        // promoting someone (e.g. Employee -> HR Admin, or granting a
+        // Sales Lead their team access) had no effect until they happened
+        // to log out and back in — every request in between kept using the
+        // stale role from the old token and authorize() below rejected them
+        // with "You do not have permission to perform this action" even
+        // though the database already had the correct role. Same
+        // "never trust the client/token for this" principle as
+        // requireOnboardingApproved()'s DB read further down this file.
+        const account = await User.findById(payload.userId).select('role isActive').lean();
+        if (!account || !account.isActive) {
+            res.status(401).json({ error: { code: 'UNAUTHORIZED', message: 'This account is no longer active' } });
+            return;
+        }
+        req.user = { ...payload, role: account.role };
         next();
     }
     catch (err) {
