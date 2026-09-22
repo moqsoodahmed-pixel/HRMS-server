@@ -49,15 +49,40 @@ const employeeSchema = zod_1.z.object({
     manager: zod_1.z.string().optional().or(zod_1.z.literal('')),
     // fullName is computed server-side; accept and ignore it.
     fullName: zod_1.z.string().optional(),
-    // password is only accepted on create; ignored on update.
-    password: zod_1.z.string().min(8, 'Password must be at least 8 characters').optional(),
+    // password is only meaningful on create. On update the form still sends
+    // the field (even when the user isn't changing it) so an empty string
+    // must be treated the same as "not provided" — otherwise every edit
+    // save fails with "Password must be at least 8 characters" even though
+    // the user never touched the password box. See EmployeeForm.jsx.
+    password: zod_1.z.string().min(8, 'Password must be at least 8 characters').optional().or(zod_1.z.literal('')),
+    // Login role for this employee's account. Only ever changes what role
+    // gets ASSIGNED — createEmployee/updateEmployee both cap what a
+    // non-elevated caller (e.g. PROJECT_HEAD) is allowed to grant.
+    role: zod_1.z.enum(['FOUNDER_CEO', 'SUPER_ADMIN', 'CTO', 'DIRECTOR', 'IT_HEAD', 'PROJECT_HEAD', 'HR_ADMIN', 'FINANCE', 'MANAGER', 'EMPLOYEE', 'AUDITOR']).optional(),
 });
+
+/**
+ * A non-elevated caller (e.g. PROJECT_HEAD) may never grant FOUNDER_CEO,
+ * CTO or SUPER_ADMIN — those requests are silently capped down to EMPLOYEE.
+ * Shared by createEmployee and updateEmployee so the rule can't drift
+ * between the two.
+ */
+function resolveAssignableRole(callerRole, requestedRole) {
+    const { isElevated } = require('../utils/roles');
+    const ELEVATED = ['FOUNDER_CEO', 'CTO', 'SUPER_ADMIN'];
+    const role = requestedRole || 'EMPLOYEE';
+    if (!isElevated(callerRole) && ELEVATED.includes(role)) return 'EMPLOYEE';
+    return role;
+}
 
 /** Turns '' into undefined and date strings into Dates. */
 function normalise(data) {
     const out = { ...data };
     delete out.fullName;
     delete out.password;
+    // `role` lives on the User account, not the Employee document — never
+    // let it fall through to Employee.create()/Object.assign(employee, …).
+    delete out.role;
     DATE_FIELDS.forEach((f) => {
         if (f in out) out[f] = out[f] ? new Date(out[f]) : undefined;
     });
@@ -190,13 +215,7 @@ const createEmployee = async (req, res, next) => {
         // Determine the role for the new user account.
         // PROJECT_HEAD can only assign non-elevated roles (cannot promote to FOUNDER_CEO/CTO/SUPER_ADMIN).
         // FOUNDER_CEO / CTO / HR_ADMIN can assign any valid role.
-        const { isElevated } = require('../utils/roles');
-        const requestedRole = data.role || 'EMPLOYEE';
-        const elevatedRoles = ['FOUNDER_CEO', 'CTO', 'SUPER_ADMIN'];
-        const callerRole = req.user?.role;
-        const assignedRole = (!isElevated(callerRole) && elevatedRoles.includes(requestedRole))
-            ? 'EMPLOYEE'   // PROJECT_HEAD tried to assign elevated role — cap it
-            : requestedRole;
+        const assignedRole = resolveAssignableRole(req.user?.role, data.role);
 
         const user = await User_1.User.create({
             email: data.officialEmail.toLowerCase(),
@@ -281,6 +300,18 @@ const updateEmployee = async (req, res, next) => {
         // Keep the linked login address in step with the official email.
         if (data.officialEmail && employee.user) {
             await User_1.User.findByIdAndUpdate(employee.user, { email: employee.officialEmail });
+        }
+
+        // Keep the linked login's ROLE in step with the "Account Role" field.
+        // This was previously impossible: the field wasn't even part of this
+        // schema, so it was silently dropped on every save and an employee's
+        // permissions could never be changed after they were created (e.g.
+        // promoting an HR intern from EMPLOYEE to HR_ADMIN). Same elevation
+        // cap as createEmployee — a non-elevated caller can never grant
+        // FOUNDER_CEO/CTO/SUPER_ADMIN.
+        if (data.role !== undefined && employee.user) {
+            const assignedRole = resolveAssignableRole(req.user?.role, data.role);
+            await User_1.User.findByIdAndUpdate(employee.user, { role: assignedRole });
         }
 
         await auditService_1.auditService.log(req, {
