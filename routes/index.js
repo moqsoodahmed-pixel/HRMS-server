@@ -264,6 +264,13 @@ router.post('/settings/telegram/test-daily-report', authenticate, authorize(), o
 // gate here is what makes the client's own unlocked-nav decision correct.
 router.post('/leads/preview', authenticate, upload.single('file'), leadController.previewLeads);
 router.post('/leads/upload', authenticate, upload.single('file'), leadController.uploadLeads);
+// Management-only (checked inside the controller via canManage()) — re-splits
+// every lead evenly across whoever is CURRENTLY an active Sales/Business
+// Development employee. Fixes the case where a lead file was imported
+// before someone joined the team: they never got any leads at import time,
+// and nothing retroactively includes them until this runs (or a new file
+// is imported).
+router.post('/leads/rebalance', authenticate, leadController.rebalanceLeads);
 router.get('/leads/stats', authenticate, leadController.getLeadStats);
 router.get('/leads/batches', authenticate, leadController.getUploadBatches);
 router.delete('/leads/batch/:batch', authenticate, leadController.deleteBatch);

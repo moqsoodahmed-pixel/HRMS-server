@@ -853,6 +853,101 @@ const reassignLead = async (req, res, next) => {
 };
 
 /**
+ * POST /api/leads/rebalance
+ * Management only. Re-splits EVERY lead evenly across the CURRENTLY active
+ * Sales/Business Development team, round-robin by createdAt order — the
+ * same distribution logic distributeLeads() runs at import time, just run
+ * again on demand.
+ *
+ * Why this exists: leads are only ever handed out at the moment a file is
+ * imported, split across whoever is an active Sales/Business Development
+ * employee AT THAT MOMENT (see distributeLeads() above). Someone hired
+ * afterward is never retroactively included — they stay at zero leads
+ * until either a new file is imported or an admin runs this. This is the
+ * fix for "the new sales hire shows 'No leads found' even with every
+ * filter cleared, but the account itself isn't broken": nothing was
+ * broken, no batch had been imported since they joined, so there was
+ * nothing to assign them.
+ */
+const rebalanceLeads = async (req, res, next) => {
+  try {
+    if (!canManage(req.user?.role)) throw new AppError("Only management can rebalance leads", 403, "FORBIDDEN");
+
+    const { Employee } = require("../models/Employee");
+    // Same department match as distributeLeads() — keeps "who counts as
+    // the sales team" in exactly one place in spirit, just duplicated here
+    // since this runs independently of an import.
+    const salesTeam = await Employee.find({
+      department: { $regex: /^(sales|business development)$/i },
+      status: { $in: ["ACTIVE", "active", "Active"] },
+    }).select("_id fullName").sort({ employeeCode: 1 }).lean();
+
+    if (salesTeam.length === 0) {
+      throw new AppError("No active Sales/Business Development employees to rebalance across", 400, "NO_SALES_TEAM");
+    }
+
+    const leads = await Lead.find({}).select("_id name assignedTo").sort({ createdAt: 1 });
+    const count = salesTeam.length;
+    const now = new Date();
+    const changedByUserId = req.user.userId;
+
+    const bulkOps = leads.map((lead, i) => {
+      const toEmployee = salesTeam[i % count]._id;
+      return {
+        updateOne: {
+          filter: { _id: lead._id },
+          update: {
+            $set: {
+              assignedTo: toEmployee,
+              assignedAt: now,
+              assignmentRound: Math.floor(i / count) + 1,
+            },
+            $push: {
+              reassignmentHistory: {
+                fromEmployee: lead.assignedTo || null,
+                toEmployee,
+                changedBy: changedByUserId,
+                changedAt: now,
+                reason: "Team rebalance",
+              },
+            },
+          },
+        },
+      };
+    });
+
+    if (bulkOps.length > 0) await Lead.bulkWrite(bulkOps);
+
+    const distribution = salesTeam.map((member, idx) => ({
+      name: member.fullName,
+      _id: member._id,
+      assigned: leads.filter((_, i) => i % count === idx).length,
+    }));
+
+    try {
+      const { AuditLog } = require("../models/NotificationAudit");
+      await AuditLog.create({
+        userId: req.user.userId,
+        userEmail: req.user.email,
+        action: "LEADS_REBALANCED",
+        module: "leads",
+        newValue: { totalLeads: leads.length, teamSize: count, distribution },
+        ipAddress: req.ip,
+      });
+    } catch (_) { }
+
+    res.json({
+      data: {
+        totalLeads: leads.length,
+        teamSize: count,
+        distribution,
+        message: `Rebalanced ${leads.length} lead(s) across ${count} active team member(s).`,
+      },
+    });
+  } catch (err) { next(err); }
+};
+
+/**
  * GET /api/leads/stats
  */
 const getLeadStats = async (req, res, next) => {
@@ -1010,4 +1105,4 @@ const revealLead = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-module.exports = { uploadLeads, previewLeads, getLeads, getLead, updateLeadStatus, reassignLead, getLeadStats, getUploadBatches, deleteBatch, revealLead };
+module.exports = { uploadLeads, previewLeads, getLeads, getLead, updateLeadStatus, reassignLead, rebalanceLeads, getLeadStats, getUploadBatches, deleteBatch, revealLead };
