@@ -1,4 +1,16 @@
 "use strict";
+// ─── DEPLOYMENT VERSION MARKER ───────────────────────────────────────────
+// Prints once, when this file is first require()'d (i.e. on server start).
+// If your server logs DO NOT show this line right after a restart, the
+// running process is loading a leadController.js from somewhere other
+// than the file you just replaced — check for a second copy of the repo,
+// a dist/build folder, a Docker image that needs rebuilding (not just
+// restarting), or multiple server instances behind a load balancer where
+// only one got the new file. grep for "LEAD_CONTROLLER_VERSION" in this
+// file to confirm it's the same one your server is actually running.
+const LEAD_CONTROLLER_VERSION = "entity-dedup-v2-2026-09-22";
+console.log(`[leadController] loaded ${LEAD_CONTROLLER_VERSION}`);
+
 const { Lead } = require("../models/Lead");
 const { AppError } = require("../middleware/errorHandler");
 const { isElevated } = require("../utils/roles");
@@ -38,6 +50,49 @@ function maskLead(lead) {
 /** Strip BOM, normalize headers */
 function normalizeHeader(h) {
   return h.trim().toLowerCase().replace(/[\s\-]+/g, "_").replace(/[^a-z0-9_]/g, "");
+}
+
+/**
+ * Digits-only, last-10 form of a phone number — strips spaces, dashes,
+ * a leading country code (+91, 0091, a leading 0, ...) so "+91 98765
+ * 43210", "0-9876543210" and "9876543210" all normalize to the same key
+ * for duplicate detection. Numbers shorter than 10 digits (clearly not a
+ * real mobile number) are kept as-is rather than mangled further.
+ */
+function normalizePhone(phone) {
+  const digits = String(phone || "").replace(/\D/g, "");
+  return digits.length > 10 ? digits.slice(-10) : digits;
+}
+
+/** Lowercased, trimmed email — the same contact typed in different casing
+ *  ("Ramesh@X.com" vs "ramesh@x.com") should still count as a duplicate. */
+function normalizeEmail(email) {
+  return String(email || "").trim().toLowerCase();
+}
+
+/** Trims and collapses internal whitespace so "Karnataka", " Karnataka ",
+ *  and "Karnataka  " all compare and display identically. */
+function normalizeState(state) {
+  return String(state || "").trim().replace(/\s+/g, " ");
+}
+
+/**
+ * Best-effort human name derived from an email's local part, used only when
+ * a raw file has no name/director-name column at all but does have a
+ * contact email — e.g. "ramesh.kumar23@gmail.com" → "Ramesh Kumar". Strips
+ * dots/underscores/hyphens/digits (common separators and dedup suffixes)
+ * and title-cases what's left. Returns "" (never a guess) when nothing
+ * usable remains, so an unrecognizable address still just falls through.
+ */
+function nameFromEmail(email) {
+  const local = String(email || "").split("@")[0] || "";
+  const cleaned = local.replace(/[._+\-0-9]+/g, " ").trim();
+  if (!cleaned) return "";
+  return cleaned
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(" ");
 }
 
 /**
@@ -117,15 +172,24 @@ function rowToLead(row, uploadedBy, uploadBatch, uploadBatchTimestamp) {
     return "";
   };
 
+  // Email — prefer the director/contact person's own email when the file
+  // splits company email vs. director email (MCA/LLP format). Falls back
+  // to the generic "email" column otherwise — unchanged for files that
+  // only ever had one email column. Computed before `name` below because
+  // the name fallback needs it.
+  const email = get("director_email", "directoremail") || get("email", "email_address", "mail");
+
   // Name — prefer an explicit director/contact-person name when the file
   // provides one (e.g. MCA/LLP exports have a separate "directorName"
   // column while "name" holds the company/entity name). Falls back to the
   // generic name columns for files that only ever had a person's name
   // under "name" (e.g. the plain Combined Leads format) — unchanged for
-  // those files.
+  // those files. As a last resort, a raw export with no name column at all
+  // (only a director/contact email) still gets a usable, human-readable
+  // name derived from that email's local part rather than being dropped.
   const directorName = get("director_name", "directorname");
   const rawNameColumn = get("name", "full_name", "fullname", "contact_name", "customer_name", "lead_name", "entity_name", "entityname");
-  const name = directorName || rawNameColumn;
+  const name = directorName || rawNameColumn || nameFromEmail(email);
   if (!name) return null;
 
   const statusRaw = get("status", "lead_status", "stage").toUpperCase();
@@ -142,13 +206,7 @@ function rowToLead(row, uploadedBy, uploadBatch, uploadBatchTimestamp) {
   // State — captured as-is from the source file (e.g. "Karnataka") so it can
   // be used to restrict which leads get imported/assigned, and later to
   // filter exports. Does not affect distribution/assignment logic itself.
-  const state = get("state", "lead_state", "province", "state_jurisdiction");
-
-  // Email — prefer the director/contact person's own email when the file
-  // splits company email vs. director email (MCA/LLP format). Falls back
-  // to the generic "email" column otherwise — unchanged for files that
-  // only ever had one email column.
-  const email = get("director_email", "directoremail") || get("email", "email_address", "mail");
+  const state = normalizeState(get("state", "lead_state", "province", "state_jurisdiction"));
 
   // Company — when we pulled the director's name into `name` above, the
   // raw "name" column (the entity/company name) belongs here instead of
@@ -158,10 +216,20 @@ function rowToLead(row, uploadedBy, uploadBatch, uploadBatchTimestamp) {
     || (directorName ? rawNameColumn : "")
     || name;
 
+  // Source entity/registration id — an MCA/LLP export repeats the SAME row
+  // (same entityId/CIN/LLPIN, same company) once per director, so this is
+  // what actually identifies "one company" rather than "one contact
+  // person". Used only for in-file dedup below (see dedupeWithinFile) —
+  // never persisted on the Lead document, it just travels alongside the
+  // lead object until dedup runs.
+  const sourceEntityId = get("entity_id", "entityid", "cin", "llpin", "registration_number", "registrationnumber");
+
   return {
     name,
     phone: phone || "",
     email,
+    normalizedPhone: normalizePhone(phone),
+    normalizedEmail: normalizeEmail(email),
     company,
     state,
     notes,
@@ -171,7 +239,112 @@ function rowToLead(row, uploadedBy, uploadBatch, uploadBatchTimestamp) {
     uploadBatchTimestamp,
     assignedTo: null,
     statusHistory: [{ newStatus: status, changedBy: uploadedBy, changedAt: new Date() }],
+    sourceEntityId,
   };
+}
+
+/**
+ * Drops duplicate rows within a single freshly parsed file, keeping the
+ * first occurrence of each company/contact. A raw MCA/LLP export lists
+ * every director of a company as a SEPARATE row — the same company
+ * (same entityId/CIN/LLPIN) repeats once per director, each with their own
+ * phone/email, so a plain phone/email check alone would let all of those
+ * director rows through as if they were different leads. To collapse those
+ * back down to one lead per company, a row is treated as a duplicate of an
+ * earlier one when ANY of the following already appeared:
+ *   1. the same source entity id (entityId/CIN/LLPIN) — the strongest
+ *      signal, present on MCA/LLP-style exports;
+ *   2. the same company name + state, for files with no entity id at all
+ *      but a repeated company name (e.g. a hand-maintained sheet);
+ *   3. the same normalized phone number;
+ *   4. the same normalized email.
+ * Any one match is enough — this keeps the very first contact row seen
+ * for that company (or that phone/email) and discards the rest.
+ */
+function dedupeWithinFile(leads) {
+  const seenEntityIds = new Set();
+  const seenCompanyState = new Set();
+  const seenPhones = new Set();
+  const seenEmails = new Set();
+  const unique = [];
+  let duplicates = 0;
+  for (const lead of leads) {
+    const entityKey = lead.sourceEntityId ? lead.sourceEntityId.trim().toLowerCase() : "";
+    const companyKey = lead.company
+      ? `${lead.company.trim().toLowerCase()}|${normalizeState(lead.state).toLowerCase()}`
+      : "";
+
+    const isDup =
+      (entityKey && seenEntityIds.has(entityKey)) ||
+      // Only fall back to the company+state key when there's no entity id
+      // to go on — a file that DOES have entity ids shouldn't be tripped
+      // up by two genuinely different companies sharing a display name.
+      (!entityKey && companyKey && seenCompanyState.has(companyKey)) ||
+      (lead.normalizedPhone && seenPhones.has(lead.normalizedPhone)) ||
+      (lead.normalizedEmail && seenEmails.has(lead.normalizedEmail));
+
+    if (isDup) { duplicates++; continue; }
+
+    if (entityKey) seenEntityIds.add(entityKey);
+    if (companyKey) seenCompanyState.add(companyKey);
+    if (lead.normalizedPhone) seenPhones.add(lead.normalizedPhone);
+    if (lead.normalizedEmail) seenEmails.add(lead.normalizedEmail);
+    unique.push(lead);
+  }
+  return { unique, duplicates };
+}
+
+/**
+ * Excludes rows that match a lead already sitting in the database (from an
+ * earlier upload) — same normalized phone OR same normalized email — so
+ * re-uploading the same raw file, or a different file that overlaps with a
+ * previous one, never creates a second copy of the same contact.
+ */
+async function excludeExistingLeads(leads) {
+  const phones = [...new Set(leads.map((l) => l.normalizedPhone).filter(Boolean))];
+  const emails = [...new Set(leads.map((l) => l.normalizedEmail).filter(Boolean))];
+  if (phones.length === 0 && emails.length === 0) return { unique: leads, duplicates: 0 };
+
+  const orClauses = [];
+  if (phones.length) orClauses.push({ normalizedPhone: { $in: phones } });
+  if (emails.length) orClauses.push({ normalizedEmail: { $in: emails } });
+
+  const existing = await Lead.find({ $or: orClauses }).select("normalizedPhone normalizedEmail").lean();
+  const existingPhones = new Set(existing.map((l) => l.normalizedPhone).filter(Boolean));
+  const existingEmails = new Set(existing.map((l) => l.normalizedEmail).filter(Boolean));
+
+  let duplicates = 0;
+  const unique = leads.filter((l) => {
+    const isDup =
+      (l.normalizedPhone && existingPhones.has(l.normalizedPhone)) ||
+      (l.normalizedEmail && existingEmails.has(l.normalizedEmail));
+    if (isDup) duplicates++;
+    return !isDup;
+  });
+  return { unique, duplicates };
+}
+
+/**
+ * Groups leads by their (normalized) state and counts each group — this is
+ * what lets the admin pick a state from what's actually in the file, rather
+ * than the upload being locked to one hardcoded state. Rows with no state
+ * value at all are grouped under "Unspecified" rather than dropped, so
+ * nothing silently disappears from the picker.
+ */
+function groupByState(leads) {
+  const groups = new Map();
+  for (const lead of leads) {
+    const display = lead.state || "Unspecified";
+    const key = display.toLowerCase();
+    if (!groups.has(key)) groups.set(key, { state: display, count: 0 });
+    groups.get(key).count += 1;
+  }
+  return [...groups.values()].sort((a, b) => b.count - a.count);
+}
+
+/** Case-insensitive, whitespace-normalized match of a lead's state against the admin's chosen state. */
+function isMatchingState(leadState, selectedState) {
+  return normalizeState(leadState).toLowerCase() === normalizeState(selectedState).toLowerCase();
 }
 
 /** 
@@ -228,22 +401,15 @@ async function generateBatchId() {
   return `${prefix}${seq}`;
 }
 
-// ─── State restriction (upload-time) ────────────────────────────────────────
-// Only leads from this state are ever imported/assigned — a raw file mixing
-// all-India data will have every other state's rows silently excluded before
-// distribution, so they never reach a sales employee. Kept as one constant,
-// shared with the state-based export filter, so the two can never drift.
-const UPLOAD_ALLOWED_STATE = "Karnataka";
-const UPLOAD_ALLOWED_STATE_REGEX = new RegExp(`^${UPLOAD_ALLOWED_STATE}$`, "i");
-function isAllowedUploadState(state) {
-  return UPLOAD_ALLOWED_STATE_REGEX.test(String(state || "").trim());
-}
-
 // ─── Parse preview (without inserting) ─────────────────────────────────────
 
 /**
  * POST /api/leads/preview
- * Parse file and return stats without importing.
+ * Parses the file, cleans it (drops duplicate rows and anything that
+ * already exists in the database), and returns stats plus the list of
+ * states actually present — without importing anything yet. The admin
+ * picks one of the returned `states` and re-submits that choice to
+ * POST /api/leads/upload to actually import it (see uploadLeads below).
  */
 const previewLeads = async (req, res, next) => {
   try {
@@ -254,25 +420,40 @@ const previewLeads = async (req, res, next) => {
     const uploadedBy = req.user.userId;
     const uploadBatch = "PREVIEW";
 
-    const leads = rows.map((row) => rowToLead(row, uploadedBy, uploadBatch, "")).filter(Boolean);
+    const parsedLeads = rows.map((row) => rowToLead(row, uploadedBy, uploadBatch, "")).filter(Boolean);
     const totalRows = rows.length;
-    const validRows = leads.length;
-    const invalidRows = totalRows - validRows;
+    const parsedRows = parsedLeads.length;
+    const invalidRows = totalRows - parsedRows;
 
-    // Same state restriction applied at actual upload time — shown here so
-    // the admin sees, before committing, how many rows will actually import.
-    const karnatakaLeads = leads.filter((l) => isAllowedUploadState(l.state));
-    const otherStateRows = validRows - karnatakaLeads.length;
+    // Clean the raw file the same way the actual import will: collapse
+    // duplicate rows (same phone or email), then drop anything that's
+    // already in the database from an earlier upload — so the counts and
+    // per-state breakdown shown here match exactly what will be imported.
+    const { unique: dedupedLeads, duplicates: duplicateRows } = dedupeWithinFile(parsedLeads);
+    const { unique: freshLeads, duplicates: alreadyImportedRows } = await excludeExistingLeads(dedupedLeads);
+
+    const validRows = freshLeads.length;
+    const states = groupByState(freshLeads);
 
     res.json({
       data: {
         totalRows,
         validRows,
         invalidRows,
-        karnatakaRows: karnatakaLeads.length,
-        otherStateRows,
-        allowedState: UPLOAD_ALLOWED_STATE,
-        sample: karnatakaLeads.slice(0, 5).map(l => ({ name: l.name, email: l.email, phone: l.phone, company: l.company, state: l.state })),
+        duplicateRows,
+        alreadyImportedRows,
+        // [{ state, count }, ...], most common first — the client renders
+        // these as the state picker; nothing is imported until the admin
+        // chooses one and calls upload with it.
+        states,
+        sample: freshLeads.slice(0, 5).map(l => ({ name: l.name, email: l.email, phone: l.phone, company: l.company, state: l.state })),
+        // Proof-of-deployment marker — open your browser's Network tab after
+        // clicking Preview and check this field in the response. If it's
+        // missing entirely, or doesn't say "entity-dedup-v2-2026-09-22", the
+        // server answering this request is NOT running the file you just
+        // replaced (old build cached, wrong server, container not rebuilt,
+        // a second/stale instance behind a load balancer, etc).
+        controllerVersion: LEAD_CONTROLLER_VERSION,
       },
     });
   } catch (err) { next(err); }
@@ -324,11 +505,24 @@ async function parseFile(file) {
 
 /**
  * POST /api/leads/upload
+ * Requires a `state` form field (chosen from the list POST /api/leads/preview
+ * returned for this same file) — only rows matching that state are ever
+ * imported/distributed. Also re-runs the same duplicate removal preview
+ * did, since a new file could have been chosen between preview and upload.
  */
 const uploadLeads = async (req, res, next) => {
   try {
     if (!canUpload(req.user?.role)) throw new AppError("Only Founder/CEO, CTO, or Project Head can upload leads", 403, "FORBIDDEN");
     if (!req.file) throw new AppError("No file uploaded.", 400, "NO_FILE");
+
+    const selectedState = normalizeState(req.body?.state);
+    if (!selectedState) {
+      throw new AppError(
+        "Please choose a state to import before uploading — preview the file first, then pick one of the states found in it.",
+        400,
+        "STATE_REQUIRED"
+      );
+    }
 
     const rows = await parseFile(req.file);
     const uploadBatchTimestamp = new Date().toISOString();
@@ -339,28 +533,38 @@ const uploadLeads = async (req, res, next) => {
     const settings = await OrgSettings.findOne({ singletonKey: "default" }).lean();
     const batchSize = settings?.leads?.batchSize || 50;
 
-    let leads = rows
+    const parsedLeads = rows
       .map((row) => rowToLead(row, req.user.userId, uploadBatch, uploadBatchTimestamp))
       .filter(Boolean);
 
     const totalRows = rows.length;
-    const validRows = leads.length;
-    const invalidRows = totalRows - validRows;
+    const parsedRows = parsedLeads.length;
+    const invalidRows = totalRows - parsedRows;
 
-    // ── State restriction ──────────────────────────────────────────────
+    // ── Duplicate removal ────────────────────────────────────────────────
+    // A raw export commonly repeats the same director/contact across
+    // several rows — collapse those to one row per phone/email before
+    // anything is inserted or handed to a sales rep, and also drop
+    // anything that matches a lead already in the database from an
+    // earlier upload, so re-uploading the same (or an overlapping) file
+    // never creates a second copy of the same contact.
+    const { unique: dedupedLeads, duplicates: duplicateRows } = dedupeWithinFile(parsedLeads);
+    const { unique: freshLeads, duplicates: alreadyImportedRows } = await excludeExistingLeads(dedupedLeads);
+
+    // ── State selection ──────────────────────────────────────────────────
     // The file may contain leads from every state (a raw MCA/GST export).
-    // Only Karnataka rows are ever imported or handed to distributeLeads,
-    // so no other state's data reaches an assigned sales employee. This is
-    // enforced here — server-side, on every upload — not left to whoever
-    // prepares the file, and it cannot be bypassed via the request.
-    const otherStateLeads = leads.filter((l) => !isAllowedUploadState(l.state));
-    leads = leads.filter((l) => isAllowedUploadState(l.state));
+    // Only rows matching the state the admin picked are ever imported or
+    // handed to distributeLeads, so no other state's data reaches an
+    // assigned sales employee. Enforced here — server-side, on every
+    // upload — not left to whoever prepares the file, and it cannot be
+    // bypassed via the request other than by picking a different state.
+    const otherStateLeads = freshLeads.filter((l) => !isMatchingState(l.state, selectedState));
+    let leads = freshLeads.filter((l) => isMatchingState(l.state, selectedState));
     const otherStateRows = otherStateLeads.length;
-    const karnatakaRows = leads.length;
 
     if (leads.length === 0) {
       throw new AppError(
-        `No ${UPLOAD_ALLOWED_STATE} leads found in the file. ${otherStateRows} row(s) from other states were excluded — only ${UPLOAD_ALLOWED_STATE} leads are imported.`,
+        `No "${selectedState}" leads found in the file after removing duplicates. ${otherStateRows} row(s) from other states were excluded.`,
         400,
         "NO_VALID_ROWS"
       );
@@ -368,12 +572,21 @@ const uploadLeads = async (req, res, next) => {
 
     // Stamp batch metadata (reflects the full file, so the batch record
     // still shows how many rows were in the source file vs. how many of
-    // those were actually Karnataka and got imported).
-    leads = leads.map(l => ({ ...l, totalInBatch: totalRows, validInBatch: validRows, skippedInBatch: invalidRows + otherStateRows }));
+    // those were actually clean + the chosen state and got imported).
+    leads = leads.map(l => ({
+      ...l,
+      totalInBatch: totalRows,
+      validInBatch: parsedRows,
+      skippedInBatch: invalidRows + duplicateRows + alreadyImportedRows + otherStateRows,
+    }));
 
     const { leads: distributedLeads, salesTeam, note } = await distributeLeads(leads, req.user.userId, batchSize);
 
-    const inserted = await Lead.insertMany(distributedLeads, { ordered: false });
+    // sourceEntityId only exists to power the company-level dedup above —
+    // it isn't a Lead field, so drop it explicitly rather than relying on
+    // Mongoose silently stripping unknown paths.
+    const insertReady = distributedLeads.map(({ sourceEntityId, ...lead }) => lead);
+    const inserted = await Lead.insertMany(insertReady, { ordered: false });
 
     // Audit log
     try {
@@ -384,7 +597,15 @@ const uploadLeads = async (req, res, next) => {
         action: "LEAD_UPLOAD",
         module: "leads",
         recordLabel: uploadBatch,
-        newValue: { imported: inserted.length, otherStateExcluded: otherStateRows, salesTeamCount: salesTeam.length, batchSize },
+        newValue: {
+          imported: inserted.length,
+          state: selectedState,
+          duplicatesInFile: duplicateRows,
+          alreadyImported: alreadyImportedRows,
+          otherStateExcluded: otherStateRows,
+          salesTeamCount: salesTeam.length,
+          batchSize,
+        },
         ipAddress: req.ip,
       });
     } catch (_) { }
@@ -393,8 +614,10 @@ const uploadLeads = async (req, res, next) => {
       data: {
         imported: inserted.length,
         skipped: invalidRows,
+        duplicatesRemoved: duplicateRows,
+        alreadyImportedExcluded: alreadyImportedRows,
         otherStateExcluded: otherStateRows,
-        allowedState: UPLOAD_ALLOWED_STATE,
+        selectedState,
         totalRows,
         uploadBatch,
         uploadBatchTimestamp,
@@ -402,8 +625,11 @@ const uploadLeads = async (req, res, next) => {
         distribution: salesTeam,
         distributionNote: note,
         batchSize,
-        message: `Successfully imported ${inserted.length} ${UPLOAD_ALLOWED_STATE} lead${inserted.length !== 1 ? "s" : ""} and distributed across ${salesTeam.length} sales team member(s).`
+        message: `Successfully imported ${inserted.length} "${selectedState}" lead${inserted.length !== 1 ? "s" : ""} and distributed across ${salesTeam.length} sales team member(s).`
+          + (duplicateRows > 0 ? ` ${duplicateRows} duplicate row(s) in the file were skipped.` : "")
+          + (alreadyImportedRows > 0 ? ` ${alreadyImportedRows} row(s) matched leads already in the system and were skipped.` : "")
           + (otherStateRows > 0 ? ` ${otherStateRows} row(s) from other states were excluded.` : ""),
+        controllerVersion: LEAD_CONTROLLER_VERSION,
       },
     });
   } catch (err) { next(err); }

@@ -27,6 +27,14 @@ const leadSchema = new mongoose.Schema(
     name: { type: String, required: true, trim: true },
     phone: { type: String, trim: true },
     email: { type: String, trim: true, lowercase: true },
+    // Digits-only last-10 form of `phone` and lowercased/trimmed form of
+    // `email` — populated at import time purely so duplicate leads (same
+    // contact re-uploaded, possibly under a different company name/casing)
+    // can be found with a plain indexed lookup instead of a regex/JS scan
+    // over the raw values. Not shown anywhere in the UI. See
+    // leadController.js normalizePhone()/normalizeEmail()/excludeExistingLeads().
+    normalizedPhone: { type: String, trim: true },
+    normalizedEmail: { type: String, trim: true, lowercase: true },
     company: { type: String, trim: true },
     state: { type: String, trim: true }, // e.g. "Karnataka" — captured from uploaded file when present
     status: {
@@ -72,6 +80,8 @@ leadSchema.index({ status: 1 });
 leadSchema.index({ state: 1 });
 leadSchema.index({ uploadBatch: 1 });
 leadSchema.index({ email: 1 });
+leadSchema.index({ normalizedPhone: 1 });
+leadSchema.index({ normalizedEmail: 1 });
 leadSchema.index({ assignedTo: 1 });
 leadSchema.index({ assignedTo: 1, status: 1 });
 leadSchema.index({ uploadBatch: 1, createdAt: -1 });
