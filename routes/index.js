@@ -249,16 +249,29 @@ router.post('/settings/telegram/test-daily-report', authenticate, authorize(), o
 
 // ─── Sales Leads ─────────────────────────────────────────────────────────────
 // NOTE: specific sub-paths BEFORE /:id to avoid route conflicts
+//
+// These routes are deliberately NOT behind requireOnboardingApproved(),
+// unlike Attendance/Leave/Payroll/Documents/Exit/Training/Performance/Assets.
+// The client (AuthContext.jsx ONBOARDING_LOCKED_ROUTES) already leaves
+// '/sales-leads' OFF that locked list on purpose — a freshly hired Sales/
+// Business Development employee needs to see and work their assigned leads
+// right away, before HR has finished approving their onboarding paperwork.
+// Previously these five routes still had requireOnboardingApproved() left
+// on them, which contradicted that: the sidebar showed Sales Leads as
+// unlocked, but every request to actually load a lead was silently 403'd
+// for that reason, and the page had no idea why — it just rendered "No
+// leads found" as if the account genuinely had zero leads. Removing the
+// gate here is what makes the client's own unlocked-nav decision correct.
 router.post('/leads/preview', authenticate, upload.single('file'), leadController.previewLeads);
 router.post('/leads/upload', authenticate, upload.single('file'), leadController.uploadLeads);
-router.get('/leads/stats', authenticate, requireOnboardingApproved(), leadController.getLeadStats);
+router.get('/leads/stats', authenticate, leadController.getLeadStats);
 router.get('/leads/batches', authenticate, leadController.getUploadBatches);
 router.delete('/leads/batch/:batch', authenticate, leadController.deleteBatch);
-router.get('/leads', authenticate, requireOnboardingApproved(), leadController.getLeads);
-router.get('/leads/:id', authenticate, requireOnboardingApproved(), leadController.getLead);
-router.patch('/leads/:id/status', authenticate, requireOnboardingApproved(), leadController.updateLeadStatus);
+router.get('/leads', authenticate, leadController.getLeads);
+router.get('/leads/:id', authenticate, leadController.getLead);
+router.patch('/leads/:id/status', authenticate, leadController.updateLeadStatus);
 router.patch('/leads/:id/assign', authenticate, leadController.reassignLead);
-router.post('/leads/:id/reveal', authenticate, requireOnboardingApproved(), leadController.revealLead);
+router.post('/leads/:id/reveal', authenticate, leadController.revealLead);
 
 // ─── Daily Reports ───────────────────────────────────────────────────────────
 router.get('/daily-reports/stats', authenticate, dailyReportController.getReportStats);

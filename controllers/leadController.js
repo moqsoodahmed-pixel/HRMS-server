@@ -354,13 +354,18 @@ function isMatchingState(leadState, selectedState) {
 async function distributeLeads(leads, uploadedBy, batchSize = 50) {
   const { Employee } = require("../models/Employee");
 
+  // Matches AuthContext.jsx canAccess()'s own "who can see Sales Leads"
+  // check on the client (department containing "sales" or "business
+  // development") — Business Development is a real, selectable department
+  // now (see constants.js DEPARTMENTS) and its employees need to actually
+  // receive round-robin leads, not just be able to view an empty list.
   const salesTeam = await Employee.find({
-    department: { $regex: /^sales$/i },
+    department: { $regex: /^(sales|business development)$/i },
     status: { $in: ["ACTIVE", "active", "Active"] },
   }).select("_id fullName").lean();
 
   if (salesTeam.length === 0) {
-    return { leads, salesTeam: [], note: "No active Sales department employees found — leads imported unassigned." };
+    return { leads, salesTeam: [], note: "No active Sales/Business Development department employees found — leads imported unassigned." };
   }
 
   const count = salesTeam.length;
