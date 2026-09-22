@@ -21,7 +21,7 @@ const DEFAULT_WINDOW = { startHour: DEFAULT_WORK_START_HOUR, startMinute: DEFAUL
 // counted from the moment they checked out. Keeps the "oops, wrong button"
 // case self-service while still requiring an HR-approved correction request
 // for anything older than this (see attendanceRequestController.js).
-const UNDO_CHECKOUT_GRACE_MINUTES = parseInt(process.env.UNDO_CHECKOUT_GRACE_MINUTES || '10', 10);
+const UNDO_CHECKOUT_GRACE_MINUTES = parseInt(process.env.UNDO_CHECKOUT_GRACE_MINUTES || '1', 10);
 
 function parseHHmm(value) {
     if (!value) return null;
