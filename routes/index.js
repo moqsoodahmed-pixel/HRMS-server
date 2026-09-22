@@ -27,7 +27,17 @@ const performanceController = require("../controllers/performanceController");
 const exitRequestController = require("../controllers/exitRequestController");
 const orgSettingsController = require("../controllers/orgSettingsController");
 const leadController = require("../controllers/leadController");
-const diagnosticsController = require("../controllers/diagnosticsController");
+// Loaded defensively: if this new file hasn't been deployed yet (e.g. it was
+// missed in a git push, since it's a brand-new file rather than an edit to
+// an existing one), the whole server would otherwise crash on boot with
+// "Cannot find module '../controllers/diagnosticsController'". Instead we
+// log a warning and disable just the /diagnostics/data-health route below.
+let diagnosticsController = null;
+try {
+    diagnosticsController = require("../controllers/diagnosticsController");
+} catch (err) {
+    console.error("[routes/index] diagnosticsController.js not found — /api/diagnostics/data-health will return 503 until HRMS-server/controllers/diagnosticsController.js is deployed.", err.message);
+}
 const dailyReportController = require("../controllers/dailyReportController");
 const appointmentLetterController = require("../controllers/appointmentLetterController");
 
@@ -252,7 +262,9 @@ router.post('/settings/telegram/test-daily-report', authenticate, authorize(), o
 // Read-only DB counts, surfaced through the app instead of requiring direct
 // MongoDB Atlas access. authorize() with no list = elevated roles only
 // (FOUNDER_CEO/CTO/SUPER_ADMIN) — see diagnosticsController.js.
-router.get('/diagnostics/data-health', authenticate, authorize(), diagnosticsController.getDataHealth);
+router.get('/diagnostics/data-health', authenticate, authorize(), diagnosticsController
+    ? diagnosticsController.getDataHealth
+    : (req, res) => res.status(503).json({ error: { code: 'NOT_DEPLOYED', message: 'diagnosticsController.js has not been deployed to this server yet.' } }));
 
 // ─── Sales Leads ─────────────────────────────────────────────────────────────
 // NOTE: specific sub-paths BEFORE /:id to avoid route conflicts
