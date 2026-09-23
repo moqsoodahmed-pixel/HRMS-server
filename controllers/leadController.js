@@ -983,7 +983,7 @@ const getLeadStats = async (req, res, next) => {
             as: "employee",
           },
         },
-        { $unwind: { path: "$employee", preserveNullAndEmpty: true } },
+        { $unwind: { path: "$employee", preserveNullAndEmptyArrays: true } },
         {
           $project: {
             employeeId: "$_id",
@@ -1045,7 +1045,7 @@ const getUploadBatches = async (req, res, next) => {
           as: "uploader",
         },
       },
-      { $unwind: { path: "$uploader", preserveNullAndEmpty: true } },
+      { $unwind: { path: "$uploader", preserveNullAndEmptyArrays: true } },
       {
         $project: {
           batchId: "$_id",
