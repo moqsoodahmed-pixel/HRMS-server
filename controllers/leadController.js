@@ -853,6 +853,93 @@ const reassignLead = async (req, res, next) => {
 };
 
 /**
+ * POST /api/leads/bulk-assign
+ * Management only. Lets CEO/Admin manually HAND-PICK which sales employee
+ * a specific set of leads goes to, instead of the automatic round-robin
+ * split that uploadLeads()/distributeLeads() and rebalanceLeads() do. This
+ * is the "I want to choose, not auto-split" path: pass the exact lead IDs
+ * you want moved (selected in the UI, or every lead in a given upload
+ * batch/filter) plus the one employee they should all go to.
+ *
+ * Body: { leadIds: string[], employeeId: string, reason?: string }
+ * - leadIds: 1-500 Lead _ids in one call (capped to keep the bulkWrite and
+ *   audit log request-sized; call again for more).
+ * - employeeId: must be an ACTIVE Sales or Business Development employee —
+ *   same eligibility rule as the auto-split, so a manual assignment can't
+ *   quietly hand leads to someone outside the sales team.
+ */
+const bulkAssignLeads = async (req, res, next) => {
+  try {
+    if (!canManage(req.user?.role)) throw new AppError("Only management can assign leads", 403, "FORBIDDEN");
+
+    const { leadIds, employeeId, reason } = req.body;
+    if (!Array.isArray(leadIds) || leadIds.length === 0) {
+      throw new AppError("leadIds must be a non-empty array", 400, "VALIDATION_ERROR");
+    }
+    if (leadIds.length > 500) {
+      throw new AppError("Cannot assign more than 500 leads in a single request", 400, "VALIDATION_ERROR");
+    }
+    leadIds.forEach((id) => assertObjectId(id, "lead id"));
+    assertObjectId(employeeId, "employee id");
+
+    const { Employee } = require("../models/Employee");
+    const emp = await Employee.findOne({
+      _id: employeeId,
+      department: { $regex: /^(sales|business development)$/i },
+      status: { $in: ["ACTIVE", "active", "Active"] },
+    }).select("_id fullName employeeCode").lean();
+    if (!emp) {
+      throw new AppError("Employee not found, or is not an active Sales/Business Development employee", 404, "NOT_FOUND");
+    }
+
+    const leads = await Lead.find({ _id: { $in: leadIds } }).select("_id assignedTo").lean();
+    if (leads.length === 0) throw new AppError("No matching leads found", 404, "NOT_FOUND");
+
+    const now = new Date();
+    const changedByUserId = req.user.userId;
+
+    const bulkOps = leads.map((lead) => ({
+      updateOne: {
+        filter: { _id: lead._id },
+        update: {
+          $set: { assignedTo: emp._id, assignedAt: now },
+          $push: {
+            reassignmentHistory: {
+              fromEmployee: lead.assignedTo || null,
+              toEmployee: emp._id,
+              changedBy: changedByUserId,
+              changedAt: now,
+              reason: reason || "Manual bulk assignment",
+            },
+          },
+        },
+      },
+    }));
+    await Lead.bulkWrite(bulkOps);
+
+    try {
+      const { AuditLog } = require("../models/NotificationAudit");
+      await AuditLog.create({
+        userId: req.user.userId,
+        userEmail: req.user.email,
+        action: "LEADS_BULK_ASSIGNED",
+        module: "leads",
+        newValue: { leadCount: leads.length, assignedTo: emp._id, assignedToName: emp.fullName, reason },
+        ipAddress: req.ip,
+      });
+    } catch (_) { }
+
+    res.json({
+      data: {
+        assignedCount: leads.length,
+        assignedTo: { _id: emp._id, fullName: emp.fullName, employeeCode: emp.employeeCode },
+        message: `Assigned ${leads.length} lead(s) to ${emp.fullName}.`,
+      },
+    });
+  } catch (err) { next(err); }
+};
+
+/**
  * POST /api/leads/rebalance
  * Management only. Re-splits EVERY lead evenly across the CURRENTLY active
  * Sales/Business Development team, round-robin by createdAt order — the
@@ -1105,4 +1192,4 @@ const revealLead = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-module.exports = { uploadLeads, previewLeads, getLeads, getLead, updateLeadStatus, reassignLead, rebalanceLeads, getLeadStats, getUploadBatches, deleteBatch, revealLead };
+module.exports = { uploadLeads, previewLeads, getLeads, getLead, updateLeadStatus, reassignLead, bulkAssignLeads, rebalanceLeads, getLeadStats, getUploadBatches, deleteBatch, revealLead };

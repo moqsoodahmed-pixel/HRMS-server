@@ -290,6 +290,10 @@ router.post('/leads/upload', authenticate, upload.single('file'), leadController
 // and nothing retroactively includes them until this runs (or a new file
 // is imported).
 router.post('/leads/rebalance', authenticate, leadController.rebalanceLeads);
+// Management-only manual assignment: CEO/Admin hand-picks which sales
+// employee a chosen set of leads goes to, instead of the automatic
+// round-robin split above. See bulkAssignLeads() in leadController.js.
+router.post('/leads/bulk-assign', authenticate, leadController.bulkAssignLeads);
 router.get('/leads/stats', authenticate, leadController.getLeadStats);
 router.get('/leads/batches', authenticate, leadController.getUploadBatches);
 router.delete('/leads/batch/:batch', authenticate, leadController.deleteBatch);
