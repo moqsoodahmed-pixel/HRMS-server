@@ -351,7 +351,7 @@ function isMatchingState(leadState, selectedState) {
  * Round-robin batch distribution: 50 leads per employee per round (configurable).
  * Continues until all leads assigned.
  */
-async function distributeLeads(leads, uploadedBy, batchSize = 50) {
+async function distributeLeads(leads, uploadedBy, batchSize = 50, employeeIds = null) {
   const { Employee } = require("../models/Employee");
 
   // Matches AuthContext.jsx canAccess()'s own "who can see Sales Leads"
@@ -359,10 +359,29 @@ async function distributeLeads(leads, uploadedBy, batchSize = 50) {
   // development") — Business Development is a real, selectable department
   // now (see constants.js DEPARTMENTS) and its employees need to actually
   // receive round-robin leads, not just be able to view an empty list.
-  const salesTeam = await Employee.find({
+  //
+  // When `employeeIds` is given (CEO/Admin manually picked who this batch
+  // should go to — solo, duo, or any hand-picked subset — instead of
+  // letting it auto-split across the whole team), the round-robin is
+  // scoped to ONLY those employees. They still must be active Sales/BD
+  // employees — this can't be used to hand leads to someone outside the
+  // sales team.
+  const baseQuery = {
     department: { $regex: /^(sales|business development)$/i },
     status: { $in: ["ACTIVE", "active", "Active"] },
-  }).select("_id fullName").lean();
+  };
+  if (Array.isArray(employeeIds) && employeeIds.length > 0) {
+    baseQuery._id = { $in: employeeIds };
+  }
+  const salesTeam = await Employee.find(baseQuery).select("_id fullName").lean();
+
+  if (Array.isArray(employeeIds) && employeeIds.length > 0 && salesTeam.length === 0) {
+    throw new AppError(
+      "None of the chosen employees are active Sales/Business Development employees — pick from the list shown after Preview.",
+      400,
+      "INVALID_ASSIGNEES"
+    );
+  }
 
   if (salesTeam.length === 0) {
     return { leads, salesTeam: [], note: "No active Sales/Business Development department employees found — leads imported unassigned." };
@@ -529,6 +548,24 @@ const uploadLeads = async (req, res, next) => {
       );
     }
 
+    // Optional manual override: CEO/Admin picked exactly who this batch
+    // should go to (solo/duo/multi), instead of letting it auto-split
+    // across the whole active Sales/Business Development team. Sent as a
+    // JSON-stringified array in the multipart body (FormData can't carry
+    // a real array field), e.g. employeeIds='["64f...","64a..."]'.
+    let employeeIds = null;
+    if (req.body?.employeeIds) {
+      try {
+        const parsed = JSON.parse(req.body.employeeIds);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          parsed.forEach((id) => assertObjectId(id, "employee id"));
+          employeeIds = parsed;
+        }
+      } catch (_) {
+        throw new AppError("employeeIds must be a JSON array of employee ids", 400, "VALIDATION_ERROR");
+      }
+    }
+
     const rows = await parseFile(req.file);
     const uploadBatchTimestamp = new Date().toISOString();
     const uploadBatch = await generateBatchId();
@@ -585,7 +622,7 @@ const uploadLeads = async (req, res, next) => {
       skippedInBatch: invalidRows + duplicateRows + alreadyImportedRows + otherStateRows,
     }));
 
-    const { leads: distributedLeads, salesTeam, note } = await distributeLeads(leads, req.user.userId, batchSize);
+    const { leads: distributedLeads, salesTeam, note } = await distributeLeads(leads, req.user.userId, batchSize, employeeIds);
 
     // sourceEntityId only exists to power the company-level dedup above —
     // it isn't a Lead field, so drop it explicitly rather than relying on
@@ -610,6 +647,7 @@ const uploadLeads = async (req, res, next) => {
           otherStateExcluded: otherStateRows,
           salesTeamCount: salesTeam.length,
           batchSize,
+          manuallyAssigned: Boolean(employeeIds),
         },
         ipAddress: req.ip,
       });
@@ -630,7 +668,11 @@ const uploadLeads = async (req, res, next) => {
         distribution: salesTeam,
         distributionNote: note,
         batchSize,
-        message: `Successfully imported ${inserted.length} "${selectedState}" lead${inserted.length !== 1 ? "s" : ""} and distributed across ${salesTeam.length} sales team member(s).`
+        manuallyAssigned: Boolean(employeeIds),
+        message: `Successfully imported ${inserted.length} "${selectedState}" lead${inserted.length !== 1 ? "s" : ""} and `
+          + (employeeIds
+            ? `assigned to ${salesTeam.length} chosen sales team member(s).`
+            : `distributed across ${salesTeam.length} sales team member(s).`)
           + (duplicateRows > 0 ? ` ${duplicateRows} duplicate row(s) in the file were skipped.` : "")
           + (alreadyImportedRows > 0 ? ` ${alreadyImportedRows} row(s) matched leads already in the system and were skipped.` : "")
           + (otherStateRows > 0 ? ` ${otherStateRows} row(s) from other states were excluded.` : ""),
