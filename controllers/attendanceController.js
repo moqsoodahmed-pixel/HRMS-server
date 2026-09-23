@@ -114,13 +114,21 @@ function recomputeDerivedFields(record, win = DEFAULT_WINDOW) {
         const grossMs = record.checkOut.getTime() - record.checkIn.getTime();
         record.workHours = Math.round((grossMs / 3600000) * 100) / 100;
 
-        // Actual break taken (from breakStart→breakEnd), capped at orgBreakMinutes
+        // Actual break taken (from breakStart→breakEnd)
         let actualBreakMinutes = 0;
         if (record.breakStart && record.breakEnd && record.breakEnd > record.breakStart) {
             actualBreakMinutes = Math.floor((record.breakEnd.getTime() - record.breakStart.getTime()) / 60000);
         }
-        // If employee never manually used break buttons, deduct the org default break
-        const breakDeductMinutes = (record.breakStart) ? Math.min(actualBreakMinutes, orgBreakMinutes) : orgBreakMinutes;
+        // Break deduction: the org's standard break (orgBreakMinutes, normally
+        // 1 hr) is a guaranteed floor, not a cap. Coming back from break early
+        // still costs the full standard break — it doesn't shave time off what
+        // they owe, i.e. it is NOT a way to earn an early check-out. Running
+        // the break long costs the actual (larger) time instead: that overage
+        // comes straight out of net working hours, so the only way to still
+        // hit the day's target is to stay later and work it — it is recorded,
+        // not forgiven. If employee never manually used the break buttons at
+        // all, the org default is deducted exactly as before.
+        const breakDeductMinutes = (record.breakStart) ? Math.max(actualBreakMinutes, orgBreakMinutes) : orgBreakMinutes;
         record.breakDurationMinutes = breakDeductMinutes;
 
         // Net working hours = gross − break
