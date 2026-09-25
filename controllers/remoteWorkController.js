@@ -94,6 +94,48 @@ const listApprovals = async (req, res, next) => {
 };
 exports.listApprovals = listApprovals;
 
+/**
+ * Company-wide employee search for the Remote Work Access picker.
+ *
+ * BUGFIX: the picker in Settings.jsx used to call the general
+ * GET /employees endpoint, whose results are scoped by
+ * utils/helpers.resolveEmployeeScope() — for a PROJECT_HEAD (a
+ * TEAM_SCOPED role) that scope is silently narrowed to "self + direct
+ * reports only" (the `managerCompanyWide` special-case there only covers
+ * the MANAGER role, not PROJECT_HEAD). A Project Head granting remote
+ * work access would then only ever see their own reports in the search
+ * results, which looked like "some employee details are not showing" —
+ * the records weren't missing, the search was quietly filtered.
+ *
+ * This endpoint is a separate, unscoped search used ONLY for the
+ * remote-work picker, and is itself gated to REMOTE_WORK_APPROVER_ROLES
+ * at the route level (routes/index.js) — the same roles who are already
+ * allowed to grant/revoke remote work for any employee, so widening the
+ * search here does not expose anyone who couldn't already be granted an
+ * exception by this same caller.
+ */
+const searchEmployeesForApproval = async (req, res, next) => {
+    try {
+        const search = String(req.query.search || '').trim();
+        if (search.length < 2) { res.json({ data: [] }); return; }
+        const { searchRegex } = require('../utils/helpers');
+        const employees = await Employee.find({
+            isArchived: false,
+            $or: [
+                { fullName: searchRegex(search) },
+                { employeeCode: searchRegex(search) },
+            ],
+        })
+            .select('fullName employeeCode department designation')
+            .sort({ fullName: 1 })
+            .limit(20)
+            .lean();
+        res.json({ data: employees });
+    }
+    catch (err) { next(err); }
+};
+exports.searchEmployeesForApproval = searchEmployeesForApproval;
+
 /** Manually ends an approval before its end date (independent of automatic date-based expiry). */
 const revokeApproval = async (req, res, next) => {
     try {

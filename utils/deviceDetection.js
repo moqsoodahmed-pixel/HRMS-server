@@ -88,24 +88,34 @@ function classifyDevice(req) {
     const chSaysMobile = chMobile === '?1';
     const chPlatformMobile = ['Android', 'iOS'].includes(chPlatform);
 
-    // Supplementary, best-effort client signal for the one gap real UA/
-    // Client-Hints sniffing cannot close on its own: iPadOS's "Request
-    // Desktop Website" rewrites the UA (and platform hints) to look exactly
-    // like real macOS Safari (see this file's top doc comment). Never the
-    // sole basis for a decision — only tips the balance when the UA/Client
-    // Hints signals above are inconclusive (i.e. they say "desktop").
+    // Supplementary, best-effort client signal for the gaps real UA/
+    // Client-Hints sniffing cannot close on its own (see this file's top
+    // doc comment) — never the sole basis for a decision, only tips the
+    // balance when the UA/Client Hints signals above are inconclusive
+    // (i.e. they say "desktop"):
+    //   - 'touch-mac-desktop-mode': iPadOS Safari, which identifies as
+    //     desktop macOS Safari by DEFAULT (not just when the user opts
+    //     into "Request Desktop Website") — multi-touch is real Macs'
+    //     tell-tale absence.
+    //   - 'touch-small-screen': a touch-primary device with a physically
+    //     small screen (Android Chrome's "Request Desktop Site" rewrites
+    //     the UA/Client-Hints to a generic desktop string but cannot spoof
+    //     the OS-level `screen` dimensions) — this is the fix for phones
+    //     that were getting through the mobile-device restriction by
+    //     switching their browser to "desktop site" mode.
     const deviceSignal = String(req.headers['x-device-signal'] || '');
     const signalSaysSpoofedTablet = deviceSignal === 'touch-mac-desktop-mode';
+    const signalSaysSpoofedPhone = deviceSignal === 'touch-small-screen';
 
     const isEmbeddedWebview = /; wv\)/i.test(ua) || /FBAN|FBAV|FB_IAB|Instagram|Line\/|MicroMessenger|Snapchat|TikTok|WhatsApp/i.test(ua);
 
-    const isMobile = uaSaysMobile || chSaysMobile || chPlatformMobile;
+    const isMobile = uaSaysMobile || chSaysMobile || chPlatformMobile || signalSaysSpoofedPhone;
     const isTablet = !isMobile && (uaSaysTablet || signalSaysSpoofedTablet);
 
     let deviceType = 'desktop';
     if (isMobile) deviceType = uaSaysTablet ? 'tablet' : 'mobile';
     else if (isTablet) deviceType = 'tablet';
-    if (!ua && chMobile === undefined) deviceType = 'unknown';
+    if (!ua && chMobile === undefined && !signalSaysSpoofedTablet && !signalSaysSpoofedPhone) deviceType = 'unknown';
 
     return {
         deviceType, // 'mobile' | 'tablet' | 'desktop' | 'unknown'

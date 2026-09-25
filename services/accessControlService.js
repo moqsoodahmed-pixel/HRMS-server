@@ -113,6 +113,29 @@ async function evaluateLoginAccess({ role, employee, req, location, settings }) 
         };
     }
 
+    // ── Mandatory location for mobile-restricted logins ─────────────────
+    // Pure UA/Client-Hints device sniffing has one gap it can never fully
+    // close on its own: a device that rewrites its own User-Agent to look
+    // like a desktop (Android Chrome's "Request Desktop Site", or iPadOS
+    // Safari's default Mac-identifying UA — see utils/deviceDetection.js's
+    // doc comment). The X-Device-Signal touch/screen heuristic there closes
+    // most of that gap, but it is still a client-reported value. Requiring
+    // a real GPS fix here closes the rest of it: it turns "deny location to
+    // try to sneak past the device check" into an automatic denial instead
+    // of a silent bypass, and a direct/manual API request (no browser, no
+    // geolocation to send) is denied the same way. This is independent of
+    // whether geo-fencing's distance check (geoRestrictionEnabled) is also
+    // turned on — that is a separate, further-restrictive setting.
+    if (sec.mobileRestrictionEnabled && (!location || !isValidCoordinate(location.latitude, location.longitude))) {
+        return {
+            allowed: false,
+            code: 'LOCATION_REQUIRED',
+            message: 'Access Denied\n\nHRMS requires location access to verify your device before signing in. Please enable location permission for this site in your browser settings and try again.',
+            reason: 'Location Access Required',
+            details: { deviceType: device.deviceType, browser: device.browser, os: device.os },
+        };
+    }
+
     // ── PART 2: Geo-Fencing ─────────────────────────────────────────────
     if (sec.geoRestrictionEnabled) {
         // PART 3: an approved remote-work exception bypasses geo-fencing

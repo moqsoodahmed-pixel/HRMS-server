@@ -268,6 +268,11 @@ router.post('/settings/telegram/test-daily-report', authenticate, authorize(), o
 // authenticated user so an employee can see their own approvals, and the
 // controller/frontend narrow the query to `employeeId` for non-approvers.
 router.get('/remote-work-approvals', authenticate, rwc.listApprovals);
+// Company-wide employee search for the grant form — gated to approver
+// roles only, see rwc.searchEmployeesForApproval for why this exists
+// separately from GET /employees (fixes Project Heads not seeing all
+// employees in the Remote Work Access picker).
+router.get('/remote-work-approvals/employees', authenticate, authorize(...REMOTE_WORK_APPROVER), rwc.searchEmployeesForApproval);
 router.post('/remote-work-approvals', authenticate, authorize(...REMOTE_WORK_APPROVER), rwc.createApproval);
 router.post('/remote-work-approvals/:id/revoke', authenticate, authorize(...REMOTE_WORK_APPROVER), rwc.revokeApproval);
 
