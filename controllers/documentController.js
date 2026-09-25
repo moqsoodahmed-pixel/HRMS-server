@@ -159,7 +159,7 @@ exports.getDocuments = getDocuments;
 const listDocuments = async (req, res, next) => {
     try {
         const { page, limit, skip } = (0, helpers_1.parsePagination)(req.query, 20);
-        const { employeeId, category, status, search, department, includeArchived } = req.query;
+        const { employeeId, category, status, search, department, includeArchived, expiringSoon } = req.query;
 
         const query = {};
         if (includeArchived === 'true' || status === 'ARCHIVED') {
@@ -169,6 +169,12 @@ const listDocuments = async (req, res, next) => {
         }
         if (status && status !== 'ARCHIVED') query.status = status;
         if (category) query.category = category;
+        // Powers the "Expiring in 30 Days" stat tile drill-down on the
+        // Documents page — same window used by getDocumentStats below, so the
+        // list a click lands on always matches the count that was clicked.
+        if (expiringSoon === 'true') {
+            query.expiryDate = { $gte: new Date(), $lte: new Date(Date.now() + 30 * 86400000) };
+        }
 
         const clauses = [];
         const { scope } = await resolveDocumentScope(req.user);
