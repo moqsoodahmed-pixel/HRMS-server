@@ -82,6 +82,31 @@ const CONTENT_ADMIN_ROLES = [...HR_ROLES];
 const LEAVE_APPROVER_ROLES = [...HR_ROLES, ...TEAM_SCOPED_ROLES];
 const ACTIVITY_FEED_ROLES = [...ELEVATED_ROLES, 'HR_ADMIN', 'AUDITOR', 'DIRECTOR'];
 
+/**
+ * Roles exempt from BOTH the mobile-device login restriction and the
+ * office-geo-fencing login restriction (see services/accessControlService.js,
+ * wired into controllers/authController.js login()). Per spec this is "CEO,
+ * CTO, Project Head" — mapped onto this schema's actual role names:
+ * FOUNDER_CEO (the CEO), CTO, and PROJECT_HEAD. SUPER_ADMIN is included
+ * alongside them because utils/roles.js already documents it as a
+ * backward-compatible, functionally-identical stand-in for FOUNDER_CEO on
+ * pre-migration accounts — never because of a name/email, only the role
+ * enum value. This list is deliberately separate from ELEVATED_ROLES (which
+ * governs RBAC route access, not device/location policy) so device/location
+ * exemption can never silently change if ELEVATED_ROLES is ever edited for
+ * an unrelated reason.
+ */
+const DEVICE_LOCATION_EXEMPT_ROLES = [...ELEVATED_ROLES, 'PROJECT_HEAD'];
+
+/**
+ * Roles allowed to grant a Temporary Remote Work Access exception (see
+ * models/RemoteWorkApproval.js / controllers/remoteWorkController.js) that
+ * bypasses geo-fencing for a specific employee during a specific date range.
+ * Per spec: "HR, CEO, CTO, Project Head". ELEVATED_ROLES already covers
+ * CEO/CTO/SUPER_ADMIN; HR_ADMIN and PROJECT_HEAD are added explicitly.
+ */
+const REMOTE_WORK_APPROVER_ROLES = [...ELEVATED_ROLES, 'HR_ADMIN', 'PROJECT_HEAD'];
+
 /** True when `role` carries platform-administrator (FOUNDER_CEO-equivalent) power. */
 function isElevated(role) {
     return ELEVATED_ROLES.includes(role);
@@ -107,6 +132,11 @@ function isTeamScoped(role) {
     return TEAM_SCOPED_ROLES.includes(role);
 }
 
+/** True when `role` is exempt from mobile-device and geo-fencing login restrictions. */
+function isDeviceLocationExempt(role) {
+    return DEVICE_LOCATION_EXEMPT_ROLES.includes(role);
+}
+
 module.exports = {
     ELEVATED_ROLES,
     DIRECTOR_ROLES,
@@ -124,9 +154,12 @@ module.exports = {
     CONTENT_ADMIN_ROLES,
     LEAVE_APPROVER_ROLES,
     ACTIVITY_FEED_ROLES,
+    DEVICE_LOCATION_EXEMPT_ROLES,
+    REMOTE_WORK_APPROVER_ROLES,
     isElevated,
     isAuthorized,
     isReadOnly,
     isDepartmentScoped,
     isTeamScoped,
+    isDeviceLocationExempt,
 };

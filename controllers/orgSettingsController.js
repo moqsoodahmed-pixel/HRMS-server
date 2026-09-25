@@ -61,6 +61,19 @@ const updateSchema = z.object({
         botToken: z.string().max(200).optional().or(z.literal('')),
         notifyChatId: z.string().max(100).optional().or(z.literal('')),
     }).optional(),
+    /**
+     * PART 6 — Mobile Device Restriction / Geo-Fencing configuration. See
+     * models/OrgSettings.js `security` and services/accessControlService.js
+     * for how these are actually used at login. Both restrictions stay
+     * disabled (false) until an admin explicitly turns them on here.
+     */
+    security: z.object({
+        mobileRestrictionEnabled: z.boolean().optional(),
+        geoRestrictionEnabled: z.boolean().optional(),
+        officeLatitude: z.union([z.number(), z.string().transform((v) => (v === '' ? undefined : Number(v)))]).optional().refine((v) => v === undefined || (v >= -90 && v <= 90), 'Latitude must be between -90 and 90'),
+        officeLongitude: z.union([z.number(), z.string().transform((v) => (v === '' ? undefined : Number(v)))]).optional().refine((v) => v === undefined || (v >= -180 && v <= 180), 'Longitude must be between -180 and 180'),
+        allowedRadiusMeters: z.union([z.number(), z.string().transform((v) => (v === '' ? undefined : Number(v)))]).optional().refine((v) => v === undefined || v > 0, 'Radius must be greater than 0'),
+    }).optional(),
 });
 
 /** Elevated roles only (FOUNDER_CEO/CTO/SUPER_ADMIN) — not even HR_ADMIN. */
@@ -74,6 +87,7 @@ const updateSettings = async (req, res, next) => {
         if (data.organization) Object.assign(settings.organization = settings.organization || {}, data.organization);
         if (data.attendance) Object.assign(settings.attendance = settings.attendance || {}, data.attendance);
         if (data.exit) Object.assign(settings.exit = settings.exit || {}, data.exit);
+        if (data.security) Object.assign(settings.security = settings.security || {}, data.security);
         if (data.telegram) {
             settings.telegram = settings.telegram || {};
             // Only update botToken if a non-empty value was explicitly provided

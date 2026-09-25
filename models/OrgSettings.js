@@ -44,6 +44,21 @@ const orgSettingsSchema = new mongoose.Schema({
     dailyReport: {
         submissionDeadlineTime: { type: String, default: '18:00' }, // HH:mm
     },
+    // Mobile-device restriction + office geo-fencing login policy (see
+    // services/accessControlService.js, wired into controllers/authController.js
+    // login()). Disabled by default so a deployment that never configures this
+    // section behaves exactly as before — nobody is restricted until an admin
+    // explicitly turns it on and sets real office coordinates. All values live
+    // here (not hardcoded) so they're editable from Settings without a
+    // code/deploy change, per the feature's "Configuration" requirement.
+    security: {
+        mobileRestrictionEnabled: { type: Boolean, default: false },
+        geoRestrictionEnabled: { type: Boolean, default: false },
+        officeLatitude: { type: Number },
+        officeLongitude: { type: Number },
+        // Meters. 25m default per spec; configurable, never hardcoded downstream.
+        allowedRadiusMeters: { type: Number, default: 25 },
+    },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 }, { timestamps: true });
 

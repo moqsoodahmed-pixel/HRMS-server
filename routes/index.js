@@ -26,6 +26,7 @@ const trainingController = require("../controllers/trainingController");
 const performanceController = require("../controllers/performanceController");
 const exitRequestController = require("../controllers/exitRequestController");
 const orgSettingsController = require("../controllers/orgSettingsController");
+const remoteWorkController = require("../controllers/remoteWorkController");
 const leadController = require("../controllers/leadController");
 // Loaded defensively: if this new file hasn't been deployed yet (e.g. it was
 // missed in a git push, since it's a brand-new file rather than an edit to
@@ -61,6 +62,7 @@ const trc = unwrap(trainingController);
 const perfC = unwrap(performanceController);
 const exitC = unwrap(exitRequestController);
 const orgC = unwrap(orgSettingsController);
+const rwc = unwrap(remoteWorkController);
 
 const _upload = require("../middleware/upload");
 const upload = _upload.upload || _upload.default || _upload;
@@ -75,6 +77,7 @@ const COMPENSATION_REQUEST = roles.COMPENSATION_REQUESTER_ROLES;
 const COMPENSATION_APPROVE = roles.COMPENSATION_APPROVER_ROLES;
 const REPORTS = roles.REPORT_ROLES;
 const AUDIT = roles.AUDIT_ROLES;
+const REMOTE_WORK_APPROVER = roles.REMOTE_WORK_APPROVER_ROLES;
 
 const router = Router();
 
@@ -257,6 +260,16 @@ router.get('/settings', authenticate, authorize(), orgC.getSettings);
 router.patch('/settings', authenticate, authorize(), orgC.updateSettings);
 router.post('/settings/telegram/test', authenticate, authorize(), orgC.testTelegramNotification);
 router.post('/settings/telegram/test-daily-report', authenticate, authorize(), orgC.testDailyReportTelegramNotification);
+
+// ─── Remote Work Access (PART 3 of Mobile/Geo-Fencing restriction) ──────────
+// Grant/list/revoke a temporary geo-fencing exception for an employee.
+// Creating/revoking is restricted to REMOTE_WORK_APPROVER_ROLES (HR_ADMIN,
+// PROJECT_HEAD, or elevated — see utils/roles.js); listing is open to any
+// authenticated user so an employee can see their own approvals, and the
+// controller/frontend narrow the query to `employeeId` for non-approvers.
+router.get('/remote-work-approvals', authenticate, rwc.listApprovals);
+router.post('/remote-work-approvals', authenticate, authorize(...REMOTE_WORK_APPROVER), rwc.createApproval);
+router.post('/remote-work-approvals/:id/revoke', authenticate, authorize(...REMOTE_WORK_APPROVER), rwc.revokeApproval);
 
 // ─── Data Health Check ────────────────────────────────────────────────────
 // Read-only DB counts, surfaced through the app instead of requiring direct

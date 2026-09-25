@@ -32,7 +32,11 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  // X-Device-Signal: added for the Mobile Device Restriction feature (see
+  // utils/deviceDetection.js) — a best-effort client-side touch/platform
+  // hint sent only on the login request (context/AuthContext.jsx). Every
+  // other existing header/behavior here is unchanged.
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Device-Signal'],
 }));
 
 const globalLimiter = rateLimit({

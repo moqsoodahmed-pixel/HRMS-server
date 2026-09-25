@@ -14,10 +14,23 @@ const emailService_1 = require("../services/emailService");
 const errorHandler_1 = require("../middleware/errorHandler");
 const cookieConfig_1 = require("../utils/cookieConfig");
 const zod_1 = require("zod");
+const { getOrCreateSettings } = require("./orgSettingsController");
+const { evaluateLoginAccess } = require("../services/accessControlService");
+const { classifyDevice } = require("../utils/deviceDetection");
 const loginSchema = zod_1.z.object({
     email: zod_1.z.string().email(),
     password: zod_1.z.string().min(1),
     rememberMe: zod_1.z.boolean().optional(),
+    // Optional browser Geolocation API result, sent by the login form when
+    // permission is granted (see HRMS-client/src/pages/Login.jsx). Absent
+    // entirely when geolocation isn't available/permitted/attempted — that
+    // is itself meaningful (see accessControlService "Location Permission
+    // Denied") and is never invented/defaulted here.
+    location: zod_1.z.object({
+        latitude: zod_1.z.number(),
+        longitude: zod_1.z.number(),
+        accuracy: zod_1.z.number().optional(),
+    }).optional().nullable(),
 });
 const forgotSchema = zod_1.z.object({ email: zod_1.z.string().email() });
 const resetSchema = zod_1.z.object({
@@ -30,7 +43,7 @@ const changeSchema = zod_1.z.object({
 });
 const login = async (req, res, next) => {
     try {
-        const { email, password, rememberMe } = loginSchema.parse(req.body);
+        const { email, password, rememberMe, location } = loginSchema.parse(req.body);
         const user = await User_1.User.findOne({ email: email.toLowerCase() })
             .select('+password');
         if (!user) {
@@ -58,6 +71,43 @@ const login = async (req, res, next) => {
             res.status(401).json({ error: { code: 'INVALID_CREDENTIALS', message: 'Invalid email or password' } });
             return;
         }
+        // Password is correct at this point. Fetch the linked Employee (if
+        // any) once here — reused both for the device/location/ABAC check
+        // below and for the response payload further down, replacing what
+        // was previously a second, separate query for the same document.
+        const employee = user.employee ? await Employee_1.Employee.findById(user.employee).select('fullName employeeCode designation department officialEmail employmentType status noticePeriodDays profilePhoto onboardingStatus onboardingStep onboardingRejectionReason') : null;
+
+        // ── Mobile Device Restriction / Geo-Fencing (ABAC) ──────────────────
+        // Runs AFTER password verification (so a wrong password never leaks
+        // device/location policy to an unauthenticated caller) and BEFORE any
+        // session/token is created or "successful login" bookkeeping happens
+        // — a denial here must leave zero trace of a completed authentication.
+        // See services/accessControlService.js for the full rule set (PARTS 1-4).
+        const settingsDoc = await getOrCreateSettings();
+        const access = await evaluateLoginAccess({ role: user.role, employee, req, location: location || null, settings: settingsDoc.security });
+        if (!access.allowed) {
+            const device = classifyDevice(req);
+            await auditService_1.auditService.log(req, {
+                action: 'LOGIN_DENIED',
+                module: 'AUTH',
+                recordId: user._id.toString(),
+                recordLabel: email,
+                newValue: {
+                    reason: access.reason,
+                    code: access.code,
+                    deviceType: device?.deviceType,
+                    browser: device?.browser,
+                    os: device?.os,
+                    ip: req.ip || req.socket?.remoteAddress,
+                    latitude: access.details?.latitude ?? null,
+                    longitude: access.details?.longitude ?? null,
+                    ...access.details,
+                },
+            });
+            res.status(403).json({ error: { code: access.code, message: access.message } });
+            return;
+        }
+
         // Reset failed attempts
         user.failedLoginAttempts = 0;
         user.lockedUntil = undefined;
@@ -70,7 +120,6 @@ const login = async (req, res, next) => {
         const token = jsonwebtoken_1.default.sign({ userId: user._id.toString(), role: user.role, email: user.email }, process.env.JWT_SECRET, { expiresIn });
         res.cookie(cookieConfig_1.AUTH_COOKIE_NAME, token, (0, cookieConfig_1.getAuthCookieOptions)({ maxAge: cookieMaxAge }));
         await auditService_1.auditService.log(req, { action: 'LOGIN', module: 'AUTH', recordId: user._id.toString(), recordLabel: email });
-        const employee = user.employee ? await Employee_1.Employee.findById(user.employee).select('fullName employeeCode designation department officialEmail employmentType status noticePeriodDays profilePhoto onboardingStatus onboardingStep onboardingRejectionReason') : null;
         res.json({
             data: {
                 user: { id: user._id, email: user.email, role: user.role },
