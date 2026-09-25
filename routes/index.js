@@ -107,6 +107,10 @@ router.delete('/leave/holidays/:id', authenticate, authorize(...HR), lc.deleteHo
 
 // ─── Attendance ──────────────────────────────────────────────────────────────
 router.get('/attendance', authenticate, requireOnboardingApproved(), ac.getAttendance);
+// Who the dashboard's "Absent Today" tile is counting, by name — see
+// attendanceController.getAbsentees for why this had to be its own
+// endpoint rather than a status filter on GET /attendance.
+router.get('/attendance/absentees', authenticate, requireOnboardingApproved(), ac.getAbsentees);
 router.get('/attendance/stats', authenticate, requireOnboardingApproved(), ac.getAttendanceStats);
 router.get('/attendance/me/today', authenticate, requireOnboardingApproved(), ac.getMyToday);
 router.post('/attendance', authenticate, authorize(...HR), ac.markAttendance);

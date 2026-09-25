@@ -562,3 +562,69 @@ const getMyToday = async (req, res, next) => {
     catch (err) { next(err); }
 };
 exports.getMyToday = getMyToday;
+
+// Attendance statuses that count as "accounted for and here" — kept as its
+// own named set (rather than inlined) because this MUST stay byte-for-byte
+// in sync with dashboardController.js's presentToday formula
+// (PRESENT + LATE + WORK_FROM_HOME + HALF_DAY). That is what makes this
+// endpoint's row count always equal the dashboard's "Absent Today" number
+// instead of silently drifting from it if one side changes and not the other.
+const PRESENT_COUNTING_STATUSES = new Set(['PRESENT', 'LATE', 'WORK_FROM_HOME', 'HALF_DAY']);
+
+/**
+ * Who the dashboard's "Absent Today" tile is actually counting, by name —
+ * fixes a real gap: "Absent Today: 8" previously had nowhere to drill into,
+ * because those 8 people mostly have NO attendance record at all today
+ * (they're not stored as status: 'ABSENT' rows), so filtering the ordinary
+ * attendance list by Status: Absent showed 0 results and looked like the
+ * dashboard number was made up. This walks every eligible employee instead
+ * of every attendance record, so someone with no check-in shows up here
+ * with `reason: 'NOT_CHECKED_IN'`, and someone with an explicit ABSENT /
+ * ON_LEAVE / HOLIDAY / WEEKEND record for the day shows up with that status
+ * as the reason — both cases the plain "8" could never distinguish.
+ */
+const getAbsentees = async (req, res, next) => {
+    try {
+        const { page, limit, skip } = (0, helpers_1.parsePagination)(req.query, 50);
+        const { date, department, designation, search } = req.query;
+        const dayStart = (0, helpers_1.startOfDay)(date || new Date());
+        const dayEnd = (0, helpers_1.endOfDay)(date || new Date());
+
+        // Same scope rule as GET /attendance (managerCompanyWide: true) so this
+        // view is scoped identically to the list it complements.
+        const { scope } = await (0, helpers_1.resolveEmployeeScope)(req.user, { managerCompanyWide: true });
+        const empQuery = { status: { $ne: 'INACTIVE' }, isArchived: false };
+        if (scope !== undefined) empQuery._id = scope === null ? { $in: [] } : scope;
+        if (department) empQuery.department = department;
+        if (designation) empQuery.designation = designation;
+        if (search) {
+            const rx = (0, helpers_1.searchRegex)(search);
+            empQuery.$or = [{ fullName: rx }, { employeeCode: rx }];
+        }
+
+        const eligible = await Employee_1.Employee.find(empQuery)
+            .select('fullName employeeCode department designation')
+            .sort({ fullName: 1 })
+            .lean();
+
+        const records = await Attendance_1.Attendance.find({
+            date: { $gte: dayStart, $lte: dayEnd },
+            employee: { $in: eligible.map((e) => e._id) },
+        }).select('employee status').lean();
+        const recordByEmployee = new Map(records.map((r) => [String(r.employee), r.status]));
+
+        const absentees = eligible
+            .filter((e) => !PRESENT_COUNTING_STATUSES.has(recordByEmployee.get(String(e._id))))
+            .map((e) => ({
+                employee: { _id: e._id, fullName: e.fullName, employeeCode: e.employeeCode, department: e.department, designation: e.designation },
+                date: dayStart,
+                reason: recordByEmployee.get(String(e._id)) || 'NOT_CHECKED_IN',
+            }));
+
+        const total = absentees.length;
+        const pageRows = absentees.slice(skip, skip + limit);
+        res.json({ data: pageRows, meta: { total, page, limit, totalPages: Math.ceil(total / limit), date: dayStart } });
+    }
+    catch (err) { next(err); }
+};
+exports.getAbsentees = getAbsentees;
