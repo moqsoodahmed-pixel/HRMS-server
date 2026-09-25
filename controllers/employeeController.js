@@ -297,21 +297,42 @@ const updateEmployee = async (req, res, next) => {
         Object.assign(employee, updateData);
         await employee.save();
 
-        // Keep the linked login address in step with the official email.
-        if (data.officialEmail && employee.user) {
-            await User_1.User.findByIdAndUpdate(employee.user, { email: employee.officialEmail });
-        }
-
-        // Keep the linked login's ROLE in step with the "Account Role" field.
-        // This was previously impossible: the field wasn't even part of this
-        // schema, so it was silently dropped on every save and an employee's
-        // permissions could never be changed after they were created (e.g.
-        // promoting an HR intern from EMPLOYEE to HR_ADMIN). Same elevation
-        // cap as createEmployee — a non-elevated caller can never grant
+        // Keep the linked login's EMAIL and ROLE in step with this form.
+        //
+        // BUGFIX ("the Sales Team Lead still logs in as a plain Employee"):
+        // both of these used to require `employee.user` (the forward link) to
+        // be set, and silently did nothing otherwise. But the Employee⇄User
+        // link can exist on either side — accounts created outside
+        // createEmployee (seed data, CSV import, older records) often have
+        // only the REVERSE link (`User.employee`) with `Employee.user` left
+        // blank. For those, picking "Manager"/"Sales Team Lead" here saved the
+        // Employee record but never touched the login's role, so the person
+        // stayed EMPLOYEE forever and kept landing on the onboarding/Employee
+        // dashboard no matter what HR selected. Now the linked login is
+        // resolved from whichever side has it, the missing forward link is
+        // backfilled so future saves are direct, and the role is applied with
+        // findByIdAndUpdate (no full-doc validation, so the select:false
+        // password field is never a problem). Same elevation cap as
+        // createEmployee — a non-elevated caller can never grant
         // FOUNDER_CEO/CTO/SUPER_ADMIN.
-        if (data.role !== undefined && employee.user) {
-            const assignedRole = resolveAssignableRole(req.user?.role, data.role);
-            await User_1.User.findByIdAndUpdate(employee.user, { role: assignedRole });
+        if (data.officialEmail !== undefined || data.role !== undefined) {
+            let linkedUserId = employee.user;
+            if (!linkedUserId) {
+                const reverse = await User_1.User.findOne({ employee: employee._id }).select('_id').lean();
+                if (reverse) {
+                    linkedUserId = reverse._id;
+                    employee.user = linkedUserId; // backfill the forward link
+                    await employee.save();
+                }
+            }
+            if (linkedUserId) {
+                const userUpdate = {};
+                if (data.officialEmail !== undefined) userUpdate.email = employee.officialEmail;
+                if (data.role !== undefined) userUpdate.role = resolveAssignableRole(req.user?.role, data.role);
+                if (Object.keys(userUpdate).length) {
+                    await User_1.User.findByIdAndUpdate(linkedUserId, userUpdate);
+                }
+            }
         }
 
         await auditService_1.auditService.log(req, {
