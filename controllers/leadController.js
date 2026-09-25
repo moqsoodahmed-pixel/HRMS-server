@@ -697,6 +697,25 @@ const getLeads = async (req, res, next) => {
       const emp = await Employee.findOne({ user: req.user.userId }).select("_id").lean();
       if (emp) query.assignedTo = emp._id;
       else return res.json({ data: [], meta: { total: 0, page, limit, totalPages: 0 } });
+    } else if (req.user?.role === "MANAGER") {
+      // Sales Team Lead (a MANAGER, per the chosen design): scoped to the
+      // leads assigned to their own team — the reps whose Reports-To/Manager
+      // is this person (Employee.manager). Previously a MANAGER saw EVERY
+      // company lead, which is both wrong for a team lead and not "what the
+      // sales team sees". A manager with no reports (or a non-sales manager)
+      // simply sees an empty list. An explicit ?assignedTo filter is honoured
+      // only when it points at one of their own team members.
+      const { Employee } = require("../models/Employee");
+      const self = await Employee.findOne({ user: req.user.userId }).select("_id").lean();
+      const reports = self
+        ? await Employee.find({ manager: self._id, isArchived: false }).select("_id").lean()
+        : [];
+      const teamIds = reports.map((r) => r._id);
+      if (assignedTo && teamIds.some((t) => String(t) === String(assignedTo))) {
+        query.assignedTo = assignedTo;
+      } else {
+        query.assignedTo = { $in: teamIds };
+      }
     } else if (assignedTo) {
       query.assignedTo = assignedTo;
     }
@@ -1234,4 +1253,83 @@ const revealLead = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-module.exports = { uploadLeads, previewLeads, getLeads, getLead, updateLeadStatus, reassignLead, bulkAssignLeads, rebalanceLeads, getLeadStats, getUploadBatches, deleteBatch, revealLead };
+/**
+ * GET /api/leads/team-overview
+ *
+ * The Sales Team Lead's roster: every rep who reports to the caller
+ * (Employee.manager === caller's Employee) with a per-rep breakdown of the
+ * leads assigned to them by status, plus a converted/contacted rollup. This
+ * is what powers the "My Sales Team" section on the Sales Team Lead's
+ * dashboard — "what team he is leading and what they've done". Team
+ * membership is the same Reports-To link used everywhere else, so a
+ * non-sales manager just gets their own reports (usually with zero leads).
+ */
+const getSalesTeamOverview = async (req, res, next) => {
+  try {
+    const { Employee } = require("../models/Employee");
+    const self = await Employee.findOne({ user: req.user.userId })
+      .select("_id fullName employeeCode department designation")
+      .lean();
+    if (!self) {
+      return res.json({ data: { teamLead: null, members: [], totals: { members: 0, assigned: 0, contacted: 0, converted: 0 } } });
+    }
+
+    const reports = await Employee.find({ manager: self._id, isArchived: false })
+      .select("_id fullName employeeCode department designation status")
+      .sort({ fullName: 1 })
+      .lean();
+    const reportIds = reports.map((r) => r._id);
+
+    // One aggregate for the whole team: counts of leads per (rep, status).
+    const grouped = reportIds.length
+      ? await Lead.aggregate([
+        { $match: { assignedTo: { $in: reportIds } } },
+        { $group: { _id: { assignedTo: "$assignedTo", status: "$status" }, count: { $sum: 1 } } },
+      ])
+      : [];
+
+    // rep id -> { NEW: n, CONTACTED: n, ... }
+    const byRep = new Map();
+    for (const g of grouped) {
+      const key = String(g._id.assignedTo);
+      if (!byRep.has(key)) byRep.set(key, {});
+      byRep.get(key)[g._id.status] = g.count;
+    }
+
+    // "Contacted" = every lead the rep has actually moved past the initial
+    // NEW state (CONTACTED/INTERESTED/NOT_INTERESTED/CONVERTED/LOST); a
+    // rep-level "worked" signal rather than only the literal CONTACTED status.
+    const CONTACTED_STATUSES = ["CONTACTED", "INTERESTED", "NOT_INTERESTED", "CONVERTED", "LOST"];
+    const members = reports.map((r) => {
+      const s = byRep.get(String(r._id)) || {};
+      const assigned = Object.values(s).reduce((a, b) => a + b, 0);
+      const contacted = CONTACTED_STATUSES.reduce((a, k) => a + (s[k] || 0), 0);
+      const converted = s.CONVERTED || 0;
+      return {
+        employee: r,
+        leads: {
+          assigned,
+          new: s.NEW || 0,
+          contacted,
+          interested: s.INTERESTED || 0,
+          converted,
+          lost: s.LOST || 0,
+        },
+      };
+    });
+
+    const totals = members.reduce(
+      (acc, m) => ({
+        members: acc.members + 1,
+        assigned: acc.assigned + m.leads.assigned,
+        contacted: acc.contacted + m.leads.contacted,
+        converted: acc.converted + m.leads.converted,
+      }),
+      { members: 0, assigned: 0, contacted: 0, converted: 0 },
+    );
+
+    res.json({ data: { teamLead: self, members, totals } });
+  } catch (err) { next(err); }
+};
+
+module.exports = { uploadLeads, previewLeads, getLeads, getLead, updateLeadStatus, reassignLead, bulkAssignLeads, rebalanceLeads, getLeadStats, getUploadBatches, deleteBatch, revealLead, getSalesTeamOverview };

@@ -52,6 +52,43 @@ async function assertNotSelfReview(req, employeeId) {
     }
 }
 
+/**
+ * Returns the set of Employee ids a caller may act on, or `null` when the
+ * caller is unrestricted (elevated / HR_ADMIN / PROJECT_HEAD — the existing
+ * company-wide reviewers). A plain MANAGER (a Sales Team Lead, per the chosen
+ * design) is restricted to their own direct reports — the reps whose
+ * Reports-To/Manager is this person — so a team lead can review their team
+ * and only their team. Any other role that somehow reaches a performance
+ * route gets an empty set (nothing) rather than accidental access.
+ */
+async function resolveReviewableScope(req) {
+    const { isElevated } = require('../utils/roles');
+    const role = req.user?.role;
+    if (isElevated(role) || role === 'HR_ADMIN' || role === 'PROJECT_HEAD') return null; // unrestricted (unchanged)
+    if (role === 'MANAGER') {
+        const self = await Employee.findOne({ user: req.user.userId }).select('_id').lean();
+        if (!self) return [];
+        const reports = await Employee.find({ manager: self._id, isArchived: false }).select('_id').lean();
+        return reports.map((r) => r._id);
+    }
+    return [];
+}
+
+/**
+ * Enforces that `employeeId` is inside the caller's reviewable scope. A no-op
+ * for unrestricted reviewers; a hard 403 for a team lead reaching outside
+ * their own team. This is the security boundary — the client also narrows its
+ * pickers, but every write path re-checks here so a hand-crafted request
+ * can't review someone else's team.
+ */
+async function assertReviewableSubject(req, employeeId) {
+    const teamIds = await resolveReviewableScope(req);
+    if (teamIds === null) return;
+    if (!teamIds.map(String).includes(String(employeeId))) {
+        throw new AppError('You can only manage performance reviews for your own team members', 403, 'OUT_OF_TEAM_SCOPE');
+    }
+}
+
 /** HR/Admin: list reviews, optionally filtered by employee/department/period/status/search. */
 const listReviews = async (req, res, next) => {
     try {
@@ -68,6 +105,21 @@ const listReviews = async (req, res, next) => {
                 $or: [{ fullName: searchRegex(search) }, { employeeCode: searchRegex(search) }],
             }).select('_id').lean();
             filter.employee = filter.employee ? filter.employee : { $in: ids.map((i) => i._id) };
+        }
+
+        // Team-lead (MANAGER) scoping: intersect whatever employee filter is
+        // already in place with the caller's own team, so a Sales Team Lead
+        // only ever lists their team's reviews. Unrestricted reviewers skip this.
+        const teamIds = await resolveReviewableScope(req);
+        if (teamIds !== null) {
+            const teamIdStrs = teamIds.map(String);
+            if (filter.employee && filter.employee.$in) {
+                filter.employee = { $in: filter.employee.$in.filter((idv) => teamIdStrs.includes(String(idv))) };
+            } else if (filter.employee) {
+                if (!teamIdStrs.includes(String(filter.employee))) filter.employee = { $in: [] };
+            } else {
+                filter.employee = { $in: teamIds };
+            }
         }
 
         const reviews = await PerformanceReview.find(filter)
@@ -87,6 +139,7 @@ const getReview = async (req, res, next) => {
             .populate('employee', 'fullName employeeCode department designation')
             .populate('reviewer', 'email');
         if (!review) throw new AppError('Review not found', 404, 'NOT_FOUND');
+        await assertReviewableSubject(req, review.employee?._id || review.employee);
         res.json({ data: review });
     }
     catch (err) { next(err); }
@@ -112,6 +165,7 @@ const createReview = async (req, res, next) => {
     try {
         const data = createSchema.parse(req.body);
         await assertNotSelfReview(req, data.employeeId);
+        await assertReviewableSubject(req, data.employeeId);
         const employee = await Employee.findById(data.employeeId).select('department designation');
         if (!employee) throw new AppError('Employee not found', 404, 'NOT_FOUND');
 
@@ -144,6 +198,7 @@ const updateReview = async (req, res, next) => {
         if (!review) throw new AppError('Review not found', 404, 'NOT_FOUND');
         if (review.status !== 'DRAFT') throw new AppError('Only a draft review can be edited', 400, 'NOT_DRAFT');
         await assertNotSelfReview(req, review.employee);
+        await assertReviewableSubject(req, review.employee);
 
         if (data.reviewPeriod !== undefined) review.reviewPeriod = data.reviewPeriod;
         if (data.criteria !== undefined) review.criteria = data.criteria;
@@ -166,6 +221,7 @@ const submitReview = async (req, res, next) => {
         if (review.status !== 'DRAFT') throw new AppError('This review has already been submitted', 400, 'ALREADY_SUBMITTED');
         if (!review.criteria.length) throw new AppError('Add at least one rated criterion before submitting', 400, 'NO_CRITERIA');
         await assertNotSelfReview(req, review.employee._id);
+        await assertReviewableSubject(req, review.employee._id);
 
         review.status = 'SUBMITTED';
         review.submittedAt = new Date();
@@ -192,6 +248,7 @@ const completeReview = async (req, res, next) => {
         if (!review) throw new AppError('Review not found', 404, 'NOT_FOUND');
         if (review.status !== 'SUBMITTED') throw new AppError('Only a submitted review can be marked complete', 400, 'NOT_SUBMITTED');
         await assertNotSelfReview(req, review.employee);
+        await assertReviewableSubject(req, review.employee);
 
         review.status = 'COMPLETED';
         review.completedAt = new Date();
@@ -211,6 +268,7 @@ const deleteReview = async (req, res, next) => {
         const review = await PerformanceReview.findById(id);
         if (!review) throw new AppError('Review not found', 404, 'NOT_FOUND');
         if (review.status !== 'DRAFT') throw new AppError('Only a draft review can be deleted', 400, 'NOT_DRAFT');
+        await assertReviewableSubject(req, review.employee);
         await review.deleteOne();
         await auditService.log(req, { action: 'PERFORMANCE_REVIEW_DELETED', module: 'PERFORMANCE', recordId: id });
         res.json({ message: 'Draft review deleted' });
@@ -221,7 +279,14 @@ exports.deleteReview = deleteReview;
 
 const getPerformanceStats = async (req, res, next) => {
     try {
-        const byStatus = await PerformanceReview.aggregate([{ $group: { _id: '$status', count: { $sum: 1 } } }]);
+        // Team-lead (MANAGER) sees stats for their own team only; unrestricted
+        // reviewers see the whole company (unchanged).
+        const teamIds = await resolveReviewableScope(req);
+        const match = teamIds === null ? {} : { employee: { $in: teamIds } };
+        const byStatus = await PerformanceReview.aggregate([
+            { $match: match },
+            { $group: { _id: '$status', count: { $sum: 1 } } },
+        ]);
         const counts = Object.fromEntries(byStatus.map((s) => [s._id, s.count]));
         res.json({
             data: {
@@ -235,3 +300,24 @@ const getPerformanceStats = async (req, res, next) => {
     catch (err) { next(err); }
 };
 exports.getPerformanceStats = getPerformanceStats;
+
+/**
+ * The employees the caller may open a review for — their own team for a
+ * MANAGER (Sales Team Lead), everyone for unrestricted reviewers. Powers the
+ * "Employee" picker in the create-review modal so a team lead is only ever
+ * offered their own reports (the server still re-checks on write).
+ */
+const getReviewableEmployees = async (req, res, next) => {
+    try {
+        const teamIds = await resolveReviewableScope(req);
+        const query = { isArchived: false, status: { $ne: 'INACTIVE' } };
+        if (teamIds !== null) query._id = { $in: teamIds };
+        const employees = await Employee.find(query)
+            .select('fullName employeeCode department designation')
+            .sort({ fullName: 1 })
+            .lean();
+        res.json({ data: employees });
+    }
+    catch (err) { next(err); }
+};
+exports.getReviewableEmployees = getReviewableEmployees;

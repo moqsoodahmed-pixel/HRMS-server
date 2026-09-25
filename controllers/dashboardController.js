@@ -67,6 +67,25 @@ const getDashboardStats = async (req, res, next) => {
         const recordScope = scope === undefined ? {} : { employee: scope === null ? { $in: [] } : scope };
         const canSeePayroll = PAYROLL_ROLES.includes(req.user?.role);
 
+        // Leadership (Project Head / CTO / Director / CEO-Founder — see
+        // utils/roles.js ATTENDANCE_EXEMPT_ROLES) are not expected to clock in,
+        // so they must NOT inflate the Absent-Today number. Resolve their
+        // Employee ids once and exclude them from BOTH the attendance-eligible
+        // denominator AND today's present tally below — the exact same
+        // exclusion attendanceController.getAbsentees applies, so the count
+        // here always equals the length of that drill-down list.
+        const exemptRoleUsers = await User.find({ role: { $in: roles_1.ATTENDANCE_EXEMPT_ROLES } }).select('_id').lean();
+        const exemptRoleUserIds = exemptRoleUsers.map((u) => u._id);
+        const exemptRoleEmpDocs = exemptRoleUserIds.length
+            ? await Employee_1.Employee.find({ user: { $in: exemptRoleUserIds } }).select('_id').lean()
+            : [];
+        const exemptEmployeeIds = exemptRoleEmpDocs.map((e) => e._id);
+        // Composable exclusion fragments (empty object when nobody is exempt),
+        // spread into the queries below. Uses $and so it never collides with a
+        // scope-based `_id`/`employee` key already present.
+        const empExemptFilter = exemptEmployeeIds.length ? { $and: [{ _id: { $nin: exemptEmployeeIds } }] } : {};
+        const recordExemptFilter = exemptEmployeeIds.length ? { $and: [{ employee: { $nin: exemptEmployeeIds } }] } : {};
+
         const canSeeWorkspaceInfo = roles_1.isElevated(req.user?.role);
 
         const [
@@ -81,7 +100,9 @@ const getDashboardStats = async (req, res, next) => {
             // already uses (status !== INACTIVE) — kept as its own field rather than reusing
             // `activeEmployees` (status === ACTIVE only) so the attendance-rate denominator
             // matches the same population the numerator (today's Attendance records) is drawn from.
-            Employee_1.Employee.countDocuments({ ...empScope, status: { $ne: 'INACTIVE' }, isArchived: false }),
+            // ...minus attendance-exempt leadership, so Absent-Today (= eligible − present)
+            // counts only people actually expected to check in.
+            Employee_1.Employee.countDocuments({ ...empScope, status: { $ne: 'INACTIVE' }, isArchived: false, ...empExemptFilter }),
             Employee_1.Employee.countDocuments({ ...empScope, status: 'INACTIVE', isArchived: false }),
             Employee_1.Employee.countDocuments({ ...empScope, status: 'ON_LEAVE', isArchived: false }),
             Employee_1.Employee.countDocuments({ ...empScope, status: 'PROBATION', isArchived: false }),
@@ -94,7 +115,7 @@ const getDashboardStats = async (req, res, next) => {
                 isArchived: false,
             }),
             Attendance_1.Attendance.aggregate([
-                { $match: { ...recordScope, date: { $gte: todayStart, $lte: todayEnd } } },
+                { $match: { ...recordScope, date: { $gte: todayStart, $lte: todayEnd }, ...recordExemptFilter } },
                 { $group: { _id: '$status', count: { $sum: 1 } } },
             ]),
             Document_1.EmployeeDocument.countDocuments({ ...recordScope, status: 'PENDING', isArchived: false }),

@@ -99,6 +99,22 @@ const ACTIVITY_FEED_ROLES = [...ELEVATED_ROLES, 'HR_ADMIN', 'AUDITOR', 'DIRECTOR
 const DEVICE_LOCATION_EXEMPT_ROLES = [...ELEVATED_ROLES, 'PROJECT_HEAD'];
 
 /**
+ * Roles that must NOT appear in, or be counted by, the attendance "absent"
+ * views — leadership who are not expected to clock in/out day to day, so
+ * counting them as "absent" is meaningless and (per the reported issue)
+ * makes the dashboard's Absent-Today number look wrong. Per the request this
+ * is "Project Head, CTO, Director, CEO / Founder": FOUNDER_CEO (+ SUPER_ADMIN,
+ * its documented backward-compatible equivalent), CTO, PROJECT_HEAD and
+ * DIRECTOR. Built on DEVICE_LOCATION_EXEMPT_ROLES (which already omits daily
+ * check-in for these leaders) plus DIRECTOR, and kept as its own list so
+ * "who is hidden from Absent" can never silently drift from the RBAC groups
+ * above. Excludes an employee from BOTH the dashboard Absent-Today count
+ * (dashboardController) AND the drill-down list (attendanceController
+ * getAbsentees), so the number and the names always match.
+ */
+const ATTENDANCE_EXEMPT_ROLES = [...DEVICE_LOCATION_EXEMPT_ROLES, 'DIRECTOR'];
+
+/**
  * Roles allowed to grant a Temporary Remote Work Access exception (see
  * models/RemoteWorkApproval.js / controllers/remoteWorkController.js) that
  * bypasses geo-fencing for a specific employee during a specific date range.
@@ -106,6 +122,18 @@ const DEVICE_LOCATION_EXEMPT_ROLES = [...ELEVATED_ROLES, 'PROJECT_HEAD'];
  * CEO/CTO/SUPER_ADMIN; HR_ADMIN and PROJECT_HEAD are added explicitly.
  */
 const REMOTE_WORK_APPROVER_ROLES = [...ELEVATED_ROLES, 'HR_ADMIN', 'PROJECT_HEAD'];
+
+/**
+ * Roles allowed to reach the performance-review management routes. The
+ * company-wide reviewers (HR_ROLES = elevated + HR_ADMIN + PROJECT_HEAD) plus
+ * MANAGER — a MANAGER (a Sales Team Lead, per the chosen design) is admitted
+ * at the route here but then hard-scoped INSIDE performanceController to only
+ * their own direct reports (resolveReviewableScope / assertReviewableSubject),
+ * so a team lead can review their team and no one else. This is deliberately
+ * its own group rather than adding MANAGER to HR_ROLES, which would wrongly
+ * hand a team lead company-wide HR/payroll/content powers everywhere else.
+ */
+const PERFORMANCE_MANAGE_ROLES = [...HR_ROLES, 'MANAGER'];
 
 /** True when `role` carries platform-administrator (FOUNDER_CEO-equivalent) power. */
 function isElevated(role) {
@@ -137,6 +165,11 @@ function isDeviceLocationExempt(role) {
     return DEVICE_LOCATION_EXEMPT_ROLES.includes(role);
 }
 
+/** True when `role` is hidden from the attendance "absent" count and list (leadership). */
+function isAttendanceExempt(role) {
+    return ATTENDANCE_EXEMPT_ROLES.includes(role);
+}
+
 module.exports = {
     ELEVATED_ROLES,
     DIRECTOR_ROLES,
@@ -155,11 +188,14 @@ module.exports = {
     LEAVE_APPROVER_ROLES,
     ACTIVITY_FEED_ROLES,
     DEVICE_LOCATION_EXEMPT_ROLES,
+    ATTENDANCE_EXEMPT_ROLES,
     REMOTE_WORK_APPROVER_ROLES,
+    PERFORMANCE_MANAGE_ROLES,
     isElevated,
     isAuthorized,
     isReadOnly,
     isDepartmentScoped,
     isTeamScoped,
     isDeviceLocationExempt,
+    isAttendanceExempt,
 };

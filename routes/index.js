@@ -239,15 +239,22 @@ router.get('/training/:id/assignees', authenticate, authorize(...HR), trc.getTra
 router.get('/training/:id/download', authenticate, requireOnboardingApproved(), trc.downloadTrainingFile);
 
 // ─── Performance Reviews ─────────────────────────────────────────────────────
+// PERF = HR reviewers + MANAGER. A MANAGER (Sales Team Lead) is admitted here
+// but hard-scoped to their own direct reports inside performanceController
+// (resolveReviewableScope / assertReviewableSubject) — see utils/roles.js
+// PERFORMANCE_MANAGE_ROLES for why this isn't just added to HR.
+const PERF = roles.PERFORMANCE_MANAGE_ROLES;
 router.get('/performance-reviews/me', authenticate, requireOnboardingApproved(), perfC.getMyReviews);
-router.get('/performance-reviews/stats', authenticate, authorize(...HR), perfC.getPerformanceStats);
-router.get('/performance-reviews', authenticate, authorize(...HR), perfC.listReviews);
-router.post('/performance-reviews', authenticate, authorize(...HR), perfC.createReview);
-router.get('/performance-reviews/:id', authenticate, authorize(...HR), perfC.getReview);
-router.patch('/performance-reviews/:id', authenticate, authorize(...HR), perfC.updateReview);
-router.patch('/performance-reviews/:id/submit', authenticate, authorize(...HR), perfC.submitReview);
-router.patch('/performance-reviews/:id/complete', authenticate, authorize(...HR), perfC.completeReview);
-router.delete('/performance-reviews/:id', authenticate, authorize(...HR), perfC.deleteReview);
+router.get('/performance-reviews/stats', authenticate, authorize(...PERF), perfC.getPerformanceStats);
+// Employees the caller may review (their team for a MANAGER) — for the create picker.
+router.get('/performance-reviews/reviewable-employees', authenticate, authorize(...PERF), perfC.getReviewableEmployees);
+router.get('/performance-reviews', authenticate, authorize(...PERF), perfC.listReviews);
+router.post('/performance-reviews', authenticate, authorize(...PERF), perfC.createReview);
+router.get('/performance-reviews/:id', authenticate, authorize(...PERF), perfC.getReview);
+router.patch('/performance-reviews/:id', authenticate, authorize(...PERF), perfC.updateReview);
+router.patch('/performance-reviews/:id/submit', authenticate, authorize(...PERF), perfC.submitReview);
+router.patch('/performance-reviews/:id/complete', authenticate, authorize(...PERF), perfC.completeReview);
+router.delete('/performance-reviews/:id', authenticate, authorize(...PERF), perfC.deleteReview);
 
 // ─── Exit requests ───────────────────────────────────────────────────────────
 router.post('/exit-requests/me', authenticate, requireOnboardingApproved(), exitC.createExitRequest);
@@ -317,6 +324,10 @@ router.post('/leads/rebalance', authenticate, leadController.rebalanceLeads);
 // round-robin split above. See bulkAssignLeads() in leadController.js.
 router.post('/leads/bulk-assign', authenticate, leadController.bulkAssignLeads);
 router.get('/leads/stats', authenticate, leadController.getLeadStats);
+// Sales Team Lead's team roster + per-rep lead progress (see
+// leadController.getSalesTeamOverview) — must be registered BEFORE
+// '/leads/:id' or "team-overview" would be captured as an :id.
+router.get('/leads/team-overview', authenticate, leadController.getSalesTeamOverview);
 router.get('/leads/batches', authenticate, leadController.getUploadBatches);
 router.delete('/leads/batch/:batch', authenticate, leadController.deleteBatch);
 router.get('/leads', authenticate, leadController.getLeads);

@@ -601,6 +601,25 @@ const getAbsentees = async (req, res, next) => {
             const rx = (0, helpers_1.searchRegex)(search);
             empQuery.$or = [{ fullName: rx }, { employeeCode: rx }];
         }
+        // Hide leadership (Project Head / CTO / Director / CEO-Founder — see
+        // utils/roles.js ATTENDANCE_EXEMPT_ROLES) from the absent list: they
+        // aren't expected to clock in, so showing them as "Not checked in" is
+        // noise. Expressed as an $and clause rather than another `_id` key so
+        // it composes with any scope-based `_id` already set above (a single
+        // ObjectId for an EMPLOYEE caller, or an $in for a team lead). This is
+        // the SAME exclusion the dashboard's Absent-Today count applies, so
+        // the number and this list always agree.
+        const { User } = require('../models/User');
+        const { ATTENDANCE_EXEMPT_ROLES } = require('../utils/roles');
+        const exemptUsers = await User.find({ role: { $in: ATTENDANCE_EXEMPT_ROLES } }).select('_id').lean();
+        const exemptUserIds = exemptUsers.map((u) => u._id);
+        const exemptEmpDocs = exemptUserIds.length
+            ? await Employee_1.Employee.find({ user: { $in: exemptUserIds } }).select('_id').lean()
+            : [];
+        const exemptEmployeeIds = exemptEmpDocs.map((e) => e._id);
+        if (exemptEmployeeIds.length) {
+            empQuery.$and = [...(empQuery.$and || []), { _id: { $nin: exemptEmployeeIds } }];
+        }
 
         const eligible = await Employee_1.Employee.find(empQuery)
             .select('fullName employeeCode department designation')
