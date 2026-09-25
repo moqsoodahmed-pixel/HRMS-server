@@ -143,7 +143,7 @@ const getEmployees = async (req, res, next) => {
         else if (documentStatus === 'PENDING') { query.documentStatus = 'PENDING'; query.hasRejectedDocuments = { $ne: true }; }
         else if (documentStatus === 'COMPLETE') query.documentStatus = 'COMPLETE';
 
-        const { scope } = await (0, helpers_1.resolveEmployeeScope)(req.user, { managerCompanyWide: true });
+        const { scope } = await (0, helpers_1.resolveEmployeeScope)(req.user);
         if (scope !== undefined) query._id = scope === null ? { $in: [] } : scope;
 
         // Whitelist sortable fields so a query string cannot sort on anything.
@@ -170,7 +170,7 @@ const getEmployee = async (req, res, next) => {
     try {
         const { id } = req.params;
         (0, helpers_1.assertObjectId)(id, 'employee id');
-        const { scope } = await (0, helpers_1.resolveEmployeeScope)(req.user, { managerCompanyWide: true });
+        const { scope } = await (0, helpers_1.resolveEmployeeScope)(req.user);
         if (scope !== undefined) {
             const allowed = scope === null ? [] : (scope.$in ? scope.$in.map(String) : [String(scope)]);
             if (!allowed.includes(String(id))) throw new errorHandler_1.AppError('Access denied', 403, 'FORBIDDEN');

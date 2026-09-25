@@ -188,7 +188,7 @@ const getAttendance = async (req, res, next) => {
         }
         if (status) query.status = status;
 
-        const { scope } = await (0, helpers_1.resolveEmployeeScope)(req.user, { managerCompanyWide: true });
+        const { scope } = await (0, helpers_1.resolveEmployeeScope)(req.user);
         const ids = await employeeIdsFor({ department, designation, search });
         if (employeeId) (0, helpers_1.assertObjectId)(employeeId, 'employeeId');
         applyEmployeeFilter(query, scope, ids, employeeId);
@@ -480,7 +480,7 @@ const getAttendanceStats = async (req, res, next) => {
             to = (0, helpers_1.endOfDay)(day);
         }
 
-        const { scope } = await (0, helpers_1.resolveEmployeeScope)(req.user, { managerCompanyWide: true });
+        const { scope } = await (0, helpers_1.resolveEmployeeScope)(req.user);
         const employeeFilter = {};
         const attendanceFilter = { date: { $gte: from, $lte: to } };
         if (scope !== undefined) {
@@ -590,9 +590,11 @@ const getAbsentees = async (req, res, next) => {
         const dayStart = (0, helpers_1.startOfDay)(date || new Date());
         const dayEnd = (0, helpers_1.endOfDay)(date || new Date());
 
-        // Same scope rule as GET /attendance (managerCompanyWide: true) so this
-        // view is scoped identically to the list it complements.
-        const { scope } = await (0, helpers_1.resolveEmployeeScope)(req.user, { managerCompanyWide: true });
+        // Same scope rule as GET /attendance so this view is scoped
+        // identically to the list it complements. A MANAGER (Sales Team Lead)
+        // is now team-scoped here too — they see absentees among their own
+        // reports only, not the whole company.
+        const { scope } = await (0, helpers_1.resolveEmployeeScope)(req.user);
         const empQuery = { status: { $ne: 'INACTIVE' }, isArchived: false };
         if (scope !== undefined) empQuery._id = scope === null ? { $in: [] } : scope;
         if (department) empQuery.department = department;
