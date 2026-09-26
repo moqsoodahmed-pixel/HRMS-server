@@ -64,8 +64,15 @@ const userSchema = new mongoose_1.Schema({
     lastLogin: { type: Date },
     lastLoginIp: { type: String },
     lastLoginUserAgent: { type: String },
+    // passwordResetToken holds a SHA-256 hash of the 6-digit numeric OTP
+    // sent by authController.forgotPassword (never the raw code, so a DB
+    // read alone can't be used to reset the account), passwordResetExpires
+    // is a short-lived expiry for that code (see forgotPassword), and
+    // passwordResetAttempts counts wrong guesses so resetPassword can lock
+    // out a code after repeated failures without needing a fresh request.
     passwordResetToken: { type: String, select: false },
     passwordResetExpires: { type: Date, select: false },
+    passwordResetAttempts: { type: Number, default: 0, select: false },
     employee: { type: mongoose_1.Schema.Types.ObjectId, ref: 'Employee' },
 }, { timestamps: true });
 exports.User = mongoose_1.default.model('User', userSchema);

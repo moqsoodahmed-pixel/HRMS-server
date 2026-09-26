@@ -34,9 +34,13 @@ const loginSchema = zod_1.z.object({
 });
 const forgotSchema = zod_1.z.object({ email: zod_1.z.string().email() });
 const resetSchema = zod_1.z.object({
-    token: zod_1.z.string(),
+    email: zod_1.z.string().email(),
+    otp: zod_1.z.string().regex(/^\d{6}$/, 'Enter the 6-digit code'),
     password: zod_1.z.string().min(8).regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])/, 'Password must contain uppercase, lowercase, number, and special character'),
 });
+// A wrong code is allowed this many guesses before it's locked out and a
+// fresh one has to be requested — keeps a 6-digit code from being brute-forced.
+const MAX_OTP_ATTEMPTS = 5;
 const changeSchema = zod_1.z.object({
     currentPassword: zod_1.z.string(),
     newPassword: zod_1.z.string().min(8).regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])/, 'Password must contain uppercase, lowercase, number, and special character'),
@@ -178,17 +182,22 @@ const forgotPassword = async (req, res, next) => {
         const user = await User_1.User.findOne({ email: email.toLowerCase() });
         // Always return success to prevent email enumeration
         if (!user) {
-            res.json({ message: 'If the email exists, a reset link has been sent' });
+            res.json({ message: 'If the email exists, a reset code has been sent' });
             return;
         }
-        const token = crypto_1.default.randomBytes(32).toString('hex');
-        user.passwordResetToken = token;
-        user.passwordResetExpires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+        // A real 6-digit numeric code, not a link — only its hash is ever
+        // stored, so reading the DB can't hand anyone the working code.
+        const otp = crypto_1.default.randomInt(100000, 1000000).toString();
+        user.passwordResetToken = crypto_1.default.createHash('sha256').update(otp).digest('hex');
+        user.passwordResetExpires = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+        user.passwordResetAttempts = 0;
         await user.save();
         const employee = user.employee ? await Employee_1.Employee.findById(user.employee) : null;
         const name = employee?.fullName || user.email;
-        await emailService_1.emailService.sendPasswordReset(user.email, token, name);
-        res.json({ message: 'If the email exists, a reset link has been sent' });
+        // Always the account's own address — email is read from the user
+        // record we just looked up, never taken from anywhere else in the request.
+        await emailService_1.emailService.sendPasswordResetOtp(user.email, otp, name);
+        res.json({ message: 'If the email exists, a reset code has been sent' });
     }
     catch (err) {
         next(err);
@@ -197,18 +206,29 @@ const forgotPassword = async (req, res, next) => {
 exports.forgotPassword = forgotPassword;
 const resetPassword = async (req, res, next) => {
     try {
-        const { token, password } = resetSchema.parse(req.body);
-        const user = await User_1.User.findOne({
-            passwordResetToken: token,
-            passwordResetExpires: { $gt: new Date() },
-        }).select('+passwordResetToken +passwordResetExpires');
-        if (!user) {
-            res.status(400).json({ error: { code: 'INVALID_TOKEN', message: 'Reset token is invalid or expired' } });
+        const { email, otp, password } = resetSchema.parse(req.body);
+        const invalid = () => res.status(400).json({ error: { code: 'INVALID_OTP', message: 'That code is invalid or has expired' } });
+        const user = await User_1.User.findOne({ email: email.toLowerCase() })
+            .select('+passwordResetToken +passwordResetExpires +passwordResetAttempts');
+        if (!user || !user.passwordResetToken || !user.passwordResetExpires || user.passwordResetExpires < new Date()) {
+            invalid();
+            return;
+        }
+        if ((user.passwordResetAttempts || 0) >= MAX_OTP_ATTEMPTS) {
+            invalid();
+            return;
+        }
+        const hashedOtp = crypto_1.default.createHash('sha256').update(otp).digest('hex');
+        if (hashedOtp !== user.passwordResetToken) {
+            user.passwordResetAttempts = (user.passwordResetAttempts || 0) + 1;
+            await user.save();
+            invalid();
             return;
         }
         user.password = await bcryptjs_1.default.hash(password, 12);
         user.passwordResetToken = undefined;
         user.passwordResetExpires = undefined;
+        user.passwordResetAttempts = 0;
         user.failedLoginAttempts = 0;
         user.lockedUntil = undefined;
         user.lockReason = undefined;

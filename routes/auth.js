@@ -13,11 +13,23 @@ const loginLimiter = (0, express_rate_limit_1.default)({
     max: 10,
     message: { error: { code: 'TOO_MANY_REQUESTS', message: 'Too many login attempts, please try again later' } },
 });
+// Keeps a single IP from spamming OTP-request emails or brute-forcing the
+// 6-digit code across many attempts within the window.
+const forgotLimiter = (0, express_rate_limit_1.default)({
+    windowMs: 15 * 60 * 1000,
+    max: 5,
+    message: { error: { code: 'TOO_MANY_REQUESTS', message: 'Too many reset requests, please try again later' } },
+});
+const resetLimiter = (0, express_rate_limit_1.default)({
+    windowMs: 15 * 60 * 1000,
+    max: 15,
+    message: { error: { code: 'TOO_MANY_REQUESTS', message: 'Too many attempts, please try again later' } },
+});
 router.post('/login', loginLimiter, authController_1.login);
 router.post('/logout', auth_1.authenticate, authController_1.logout);
 router.get('/me', auth_1.authenticate, authController_1.getMe);
-router.post('/forgot-password', authController_1.forgotPassword);
-router.post('/reset-password', authController_1.resetPassword);
+router.post('/forgot-password', forgotLimiter, authController_1.forgotPassword);
+router.post('/reset-password', resetLimiter, authController_1.resetPassword);
 router.post('/change-password', auth_1.authenticate, authController_1.changePassword);
 exports.default = router;
 //# sourceMappingURL=auth.js.map

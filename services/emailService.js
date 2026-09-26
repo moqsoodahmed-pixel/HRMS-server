@@ -1,31 +1,77 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.emailService = void 0;
-const nodemailer_1 = __importDefault(require("nodemailer"));
-const transporter = nodemailer_1.default.createTransport({
-    host: process.env.SMTP_HOST || 'smtp.gmail.com',
-    port: parseInt(process.env.SMTP_PORT || '587'),
-    secure: process.env.SMTP_SECURE === 'true',
-    auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASSWORD || process.env.SMTP_PASS,
-    },
-});
-const SMTP_CONFIGURED = Boolean(process.env.SMTP_USER && (process.env.SMTP_PASSWORD || process.env.SMTP_PASS));
+
 /**
- * Sends a mail, or logs and resolves when SMTP is not configured. Outbound mail is a
- * convenience here — a missing SMTP setup must never fail the request that triggered it.
+ * Single outbound-mail path for the whole app (password-reset OTPs, welcome
+ * mail, payslips, and leave-request approver alerts alike), backed by
+ * Brevo's transactional email HTTP API rather than raw SMTP.
+ *
+ * This used to go through nodemailer over SMTP (smtp-relay.brevo.com:587),
+ * but on Railway that connection was timing out — the request logs showed
+ * "[email:leave] send failed: Connection timeout" every time a leave
+ * request tried to notify its approvers, which means the container's
+ * outbound network never completed the TCP handshake to port 587 at all
+ * (an auth or TLS problem fails in milliseconds; this just hung until
+ * nodemailer gave up). Railway's network is known to be unreliable for
+ * exactly this — direct SMTP ports (25/465/587) get silently dropped in
+ * some regions/plans — so the fix is to stop using SMTP entirely and call
+ * Brevo's REST API over plain HTTPS (port 443) instead, which is never
+ * blocked. Reads BREVO_API_KEY (the API key from Brevo's SMTP & API page —
+ * NOT the SMTP key used before) and LEAVE_EMAIL_FROM (unchanged, still the
+ * verified sender). The old LEAVE_SMTP_HOST/LEAVE_SMTP_PORT/
+ * LEAVE_SMTP_SECURE/LEAVE_SMTP_USER/LEAVE_SMTP_PASSWORD variables are no
+ * longer read anywhere and can be left in Railway or removed at your
+ * convenience.
  */
-async function send(options) {
+const BREVO_API_URL = 'https://api.brevo.com/v3/smtp/email';
+const BREVO_API_KEY = process.env.BREVO_API_KEY;
+const SMTP_CONFIGURED = Boolean(BREVO_API_KEY);
+
+/** Splits a "Name <email>" string (or a bare email) into Brevo's {name, email} sender shape. */
+function parseFrom(raw) {
+    const fallback = { name: 'DutyLaunch HRMS', email: 'noreply@dutylaunch.com' };
+    if (!raw)
+        return fallback;
+    const match = raw.match(/^\s*"?([^"<]*)"?\s*<([^>]+)>\s*$/);
+    if (match) {
+        const name = match[1].trim();
+        return { name: name || fallback.name, email: match[2].trim() };
+    }
+    return { name: fallback.name, email: raw.trim() };
+}
+const MAIL_FROM = parseFrom(process.env.LEAVE_EMAIL_FROM);
+
+/**
+ * Sends a mail via Brevo's HTTP API, or logs and resolves when it's not
+ * configured. Outbound mail is a convenience here — a missing setup or a
+ * delivery failure must never fail the request that triggered it.
+ */
+async function send({ to, subject, html }) {
     if (!SMTP_CONFIGURED) {
-        console.warn(`[email] SMTP is not configured — skipped "${options.subject}" to ${options.to}`);
+        console.warn(`[email] BREVO_API_KEY is not configured — skipped "${subject}" to ${to}`);
         return { skipped: true };
     }
     try {
-        return await transporter.sendMail(options);
+        const res = await fetch(BREVO_API_URL, {
+            method: 'POST',
+            headers: {
+                accept: 'application/json',
+                'content-type': 'application/json',
+                'api-key': BREVO_API_KEY,
+            },
+            body: JSON.stringify({
+                sender: MAIL_FROM,
+                to: [{ email: to }],
+                subject,
+                htmlContent: html,
+            }),
+        });
+        if (!res.ok) {
+            const body = await res.text().catch(() => '');
+            throw new Error(`Brevo API responded ${res.status}: ${body}`);
+        }
+        return await res.json();
     }
     catch (err) {
         console.error('[email] send failed:', err.message);
@@ -33,56 +79,24 @@ async function send(options) {
     }
 }
 
-/**
- * A second, completely separate SMTP connection used only for the leave-
- * request approver alert (see sendLeaveRequestAlert below) — deliberately
- * not sharing the SMTP_HOST/SMTP_USER/EMAIL_FROM variables above, which
- * stay pointed at whatever was already configured and already sending
- * password-reset/welcome/payslip mail. This lets the leave-request emails
- * go out through a different provider (e.g. Brevo) without touching that
- * existing setup. Uses its own LEAVE_SMTP_HOST/LEAVE_SMTP_PORT/
- * LEAVE_SMTP_SECURE/LEAVE_SMTP_USER/LEAVE_SMTP_PASSWORD/LEAVE_EMAIL_FROM
- * variables so the two never collide in Railway (or any other host) — set
- * these to your Brevo SMTP credentials, distinct from the SMTP_ ones.
- */
-const leaveTransporter = nodemailer_1.default.createTransport({
-    host: process.env.LEAVE_SMTP_HOST,
-    port: parseInt(process.env.LEAVE_SMTP_PORT || '587'),
-    secure: process.env.LEAVE_SMTP_SECURE === 'true',
-    auth: {
-        user: process.env.LEAVE_SMTP_USER,
-        pass: process.env.LEAVE_SMTP_PASSWORD,
-    },
-});
-const LEAVE_SMTP_CONFIGURED = Boolean(process.env.LEAVE_SMTP_HOST && process.env.LEAVE_SMTP_USER && process.env.LEAVE_SMTP_PASSWORD);
-async function sendViaLeaveProvider(options) {
-    if (!LEAVE_SMTP_CONFIGURED) {
-        console.warn(`[email:leave] LEAVE_SMTP is not configured — skipped "${options.subject}" to ${options.to}`);
-        return { skipped: true };
-    }
-    try {
-        return await leaveTransporter.sendMail(options);
-    }
-    catch (err) {
-        console.error('[email:leave] send failed:', err.message);
-        return { failed: true, error: err.message };
-    }
-}
 exports.emailService = {
-    async sendPasswordReset(email, token, name) {
-        const resetUrl = `${process.env.CLIENT_URL}/reset-password?token=${token}`;
+    /**
+     * Emails the 6-digit numeric OTP generated by authController.forgotPassword.
+     * The code itself is never stored anywhere (the DB only keeps a hash of
+     * it), so this email is the only place the requesting user can read it
+     * from — it always goes to the account's own address, never anyone else's.
+     */
+    async sendPasswordResetOtp(email, otp, name) {
         await send({
-            from: process.env.EMAIL_FROM || 'DutyLaunch HRMS <noreply@dutylaunch.com>',
             to: email,
-            subject: 'Password Reset Request - DutyLaunch HRMS',
+            subject: 'Your password reset code - DutyLaunch HRMS',
             html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <h2 style="color: #1e40af;">DutyLaunch HRMS</h2>
           <p>Hi ${name},</p>
-          <p>You requested a password reset. Click the button below to reset your password:</p>
-          <a href="${resetUrl}" style="display: inline-block; padding: 12px 24px; background: #1e40af; color: white; text-decoration: none; border-radius: 4px; margin: 16px 0;">Reset Password</a>
-          <p>This link expires in 1 hour.</p>
-          <p>If you did not request this, please ignore this email.</p>
+          <p>Use the code below to reset your password. It expires in 10 minutes.</p>
+          <div style="display: inline-block; padding: 16px 28px; background: #eef2ff; color: #1e40af; font-size: 28px; font-weight: bold; letter-spacing: 8px; border-radius: 6px; margin: 16px 0;">${otp}</div>
+          <p>If you did not request this, please ignore this email — your password will not change.</p>
           <hr/>
           <small style="color: #6b7280;">DutyLaunch Solutions Private Limited</small>
         </div>
@@ -91,7 +105,6 @@ exports.emailService = {
     },
     async sendWelcome(email, name, tempPassword) {
         await send({
-            from: process.env.EMAIL_FROM || 'DutyLaunch HRMS <noreply@dutylaunch.com>',
             to: email,
             subject: 'Welcome to DutyLaunch HRMS',
             html: `
@@ -111,7 +124,6 @@ exports.emailService = {
     },
     async sendPayslip(email, name, month, year) {
         await send({
-            from: process.env.EMAIL_FROM || 'DutyLaunch HRMS <noreply@dutylaunch.com>',
             to: email,
             subject: `Payslip for ${month} ${year} - DutyLaunch HRMS`,
             html: `
@@ -129,12 +141,7 @@ exports.emailService = {
      * utils/roles.js LEAVE_EMAIL_NOTIFY_ROLES) that a new leave request needs
      * review. Called once per recipient from leaveController.createLeaveRequest
      * right after the request is saved; a delivery failure is swallowed by
-     * sendViaLeaveProvider() above and never blocks the employee's request
-     * from succeeding. Deliberately sent through the separate
-     * leaveTransporter (the LEAVE_SMTP_ and LEAVE_EMAIL_FROM variables)
-     * rather than send() and the plain SMTP_ variables, so this one email
-     * type can run on its own provider (Brevo) without touching whatever
-     * the rest of the app's emails already use.
+     * send() above and never blocks the employee's request from succeeding.
      */
     async sendLeaveRequestAlert(email, recipientName, details) {
         const {
@@ -143,8 +150,7 @@ exports.emailService = {
         } = details;
         const dateRange = startDate === endDate ? startDate : `${startDate} to ${endDate}`;
         const reviewUrl = `${process.env.CLIENT_URL}/leave`;
-        await sendViaLeaveProvider({
-            from: process.env.LEAVE_EMAIL_FROM || 'DutyLaunch HRMS <noreply@dutylaunch.com>',
+        await send({
             to: email,
             subject: `New leave request from ${employeeName} — action needed`,
             html: `
