@@ -399,8 +399,39 @@ const updatePayslipStatus = async (req, res, next) => {
             ? { $set: { status, paidOn: new Date() } }
             : { $set: { status }, $unset: { paidOn: '' } };
         const payslip = await Payroll_1.Payslip.findByIdAndUpdate(id, update, { new: true })
-            .populate('employee', 'fullName employeeCode');
+            .populate('employee', 'fullName employeeCode user');
         if (!payslip) throw new errorHandler_1.AppError('Payslip not found', 404, 'NOT_FOUND');
+
+        // Whoever has authority (HR/finance) just marked this paid — email
+        // the employee it was paid to, and only them, the moment that
+        // happens. Same lookup-by-own-account pattern as the "payslip
+        // generated" email above; a missing link/email or the send itself
+        // failing is swallowed here so it never turns an already-saved
+        // status change into an error response.
+        if (status === 'PAID') {
+            try {
+                const employeeUserId = payslip.employee?.user;
+                if (!employeeUserId) {
+                    console.warn(`[payroll] skipped payment email — employee ${payslip.employee?._id} has no linked user account`);
+                } else {
+                    const requester = await User_1.User.findById(employeeUserId).select('email').lean();
+                    if (requester?.email) {
+                        const monthName = new Date(payslip.year, payslip.month - 1, 1).toLocaleDateString('en-IN', { month: 'long' });
+                        await emailService_1.emailService.sendPayslipPaid(requester.email, payslip.employee?.fullName || 'there', {
+                            month: monthName,
+                            year: payslip.year,
+                            netSalary: payslip.netSalary,
+                            paidOn: payslip.paidOn,
+                        });
+                    } else {
+                        console.warn(`[payroll] skipped payment email — user ${employeeUserId} has no email on file`);
+                    }
+                }
+            } catch (err) {
+                console.error('[payroll] failed to email employee of payment:', err.message);
+            }
+        }
+
         await auditService_1.auditService.log(req, {
             action: 'PAYSLIP_STATUS_CHANGED', module: 'PAYROLL',
             recordId: id, recordLabel: payslip.employee?.fullName, newValue: { status },

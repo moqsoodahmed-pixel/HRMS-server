@@ -148,6 +148,34 @@ exports.emailService = {
         });
     },
     /**
+     * Called from payrollController.updatePayslipStatus the moment HR/finance
+     * marks a payslip PAID — always to the employee that payment was made
+     * to, looked up from their own account the same way as everywhere else
+     * here, never to whoever clicked the button.
+     */
+    async sendPayslipPaid(email, name, details) {
+        const { month, year, netSalary, paidOn } = details;
+        const paidDate = paidOn ? new Date(paidOn).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : undefined;
+        await send({
+            to: email,
+            subject: `Your salary for ${month} ${year} has been paid - DutyLaunch HRMS`,
+            html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #1e40af;">DutyLaunch HRMS</h2>
+          <p>Hi ${name},</p>
+          <p>Your salary for <strong>${month} ${year}</strong> has been <strong style="color: #16a34a;">paid</strong>.</p>
+          <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+            <tr><td style="padding: 6px 0; color: #6b7280;">Net amount</td><td style="padding: 6px 0;"><strong>₹${netSalary}</strong></td></tr>
+            ${paidDate ? `<tr><td style="padding: 6px 0; color: #6b7280;">Paid on</td><td style="padding: 6px 0;"><strong>${paidDate}</strong></td></tr>` : ''}
+          </table>
+          <a href="${process.env.CLIENT_URL}/payroll" style="display: inline-block; padding: 12px 24px; background: #1e40af; color: white; text-decoration: none; border-radius: 4px;">View Payslip</a>
+          <hr/>
+          <small style="color: #6b7280;">DutyLaunch Solutions Private Limited</small>
+        </div>
+      `,
+        });
+    },
+    /**
      * Tells the employee who filed a leave request that it's been approved
      * or rejected. Called from leaveController.approveLeave/rejectLeave
      * right after the decision is saved, always to that employee's own
