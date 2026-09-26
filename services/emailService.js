@@ -88,5 +88,41 @@ exports.emailService = {
       `,
         });
     },
+    /**
+     * Notifies one approver (CTO / CEO / Project Head — see
+     * utils/roles.js LEAVE_EMAIL_NOTIFY_ROLES) that a new leave request needs
+     * review. Called once per recipient from leaveController.createLeaveRequest
+     * right after the request is saved; a delivery failure is swallowed by
+     * send() above and never blocks the employee's request from succeeding.
+     */
+    async sendLeaveRequestAlert(email, recipientName, details) {
+        const {
+            employeeName, employeeCode, department, leaveType, subType,
+            startDate, endDate, totalDays, reason,
+        } = details;
+        const dateRange = startDate === endDate ? startDate : `${startDate} to ${endDate}`;
+        const reviewUrl = `${process.env.CLIENT_URL}/leave`;
+        await send({
+            from: process.env.EMAIL_FROM || 'DutyLaunch HRMS <noreply@dutylaunch.com>',
+            to: email,
+            subject: `New leave request from ${employeeName} — action needed`,
+            html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #1e40af;">DutyLaunch HRMS</h2>
+          <p>Hi ${recipientName},</p>
+          <p><strong>${employeeName}</strong>${employeeCode ? ` (${employeeCode})` : ''}${department ? ` from ${department}` : ''} has requested leave and it is awaiting review.</p>
+          <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+            <tr><td style="padding: 6px 0; color: #6b7280;">Leave type</td><td style="padding: 6px 0;"><strong>${leaveType}${subType ? ` (${subType})` : ''}</strong></td></tr>
+            <tr><td style="padding: 6px 0; color: #6b7280;">Dates</td><td style="padding: 6px 0;"><strong>${dateRange}</strong></td></tr>
+            <tr><td style="padding: 6px 0; color: #6b7280;">Duration</td><td style="padding: 6px 0;"><strong>${totalDays} day(s)</strong></td></tr>
+            ${reason ? `<tr><td style="padding: 6px 0; color: #6b7280; vertical-align: top;">Reason</td><td style="padding: 6px 0;">${reason}</td></tr>` : ''}
+          </table>
+          <a href="${reviewUrl}" style="display: inline-block; padding: 12px 24px; background: #1e40af; color: white; text-decoration: none; border-radius: 4px;">Review request</a>
+          <hr/>
+          <small style="color: #6b7280;">DutyLaunch Solutions Private Limited</small>
+        </div>
+      `,
+        });
+    },
 };
 //# sourceMappingURL=emailService.js.map

@@ -83,6 +83,19 @@ const LEAVE_APPROVER_ROLES = [...HR_ROLES, ...TEAM_SCOPED_ROLES];
 const ACTIVITY_FEED_ROLES = [...ELEVATED_ROLES, 'HR_ADMIN', 'AUDITOR', 'DIRECTOR'];
 
 /**
+ * Roles emailed the moment a new leave request is filed (see
+ * controllers/leaveController.js createLeaveRequest), separate from
+ * LEAVE_APPROVER_ROLES above (which gates who is *allowed* to approve/reject
+ * — broader, and includes HR_ADMIN/MANAGER). Per spec this email goes only
+ * to "CTO, CEO and Project Head": ELEVATED_ROLES already covers
+ * FOUNDER_CEO/CTO (+ SUPER_ADMIN, its documented backward-compatible
+ * equivalent); PROJECT_HEAD is added explicitly. Every active user holding
+ * one of these roles gets the email, company-wide — this list does not
+ * affect who may act on the request, only who is emailed about it.
+ */
+const LEAVE_EMAIL_NOTIFY_ROLES = [...ELEVATED_ROLES, 'PROJECT_HEAD'];
+
+/**
  * Roles exempt from BOTH the mobile-device login restriction and the
  * office-geo-fencing login restriction (see services/accessControlService.js,
  * wired into controllers/authController.js login(), and also re-checked on
@@ -192,6 +205,7 @@ module.exports = {
     REPORT_ROLES,
     CONTENT_ADMIN_ROLES,
     LEAVE_APPROVER_ROLES,
+    LEAVE_EMAIL_NOTIFY_ROLES,
     ACTIVITY_FEED_ROLES,
     DEVICE_LOCATION_EXEMPT_ROLES,
     ATTENDANCE_EXEMPT_ROLES,

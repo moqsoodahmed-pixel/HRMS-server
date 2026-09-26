@@ -7,6 +7,7 @@ const Employee_1 = require("../models/Employee");
 const User_1 = require("../models/User");
 const NotificationAudit_1 = require("../models/NotificationAudit");
 const auditService_1 = require("../services/auditService");
+const emailService_1 = require("../services/emailService");
 const errorHandler_1 = require("../middleware/errorHandler");
 const helpers_1 = require("../utils/helpers");
 const zod_1 = require("zod");
@@ -281,7 +282,7 @@ const createLeaveRequest = async (req, res, next) => {
         await recalcBalance(employeeId, data.leaveType, year);
 
         const employee = await Employee_1.Employee.findById(employeeId).populate('manager', 'user fullName');
-        
+
         const recipientUserIds = new Set();
         if (employee?.manager?.user) {
             recipientUserIds.add(employee.manager.user.toString());
@@ -308,6 +309,34 @@ const createLeaveRequest = async (req, res, next) => {
                 relatedId: request._id,
             });
         }
+
+        // Email CTO, CEO/Founder and Project Head the moment the request is
+        // filed (see utils/roles.js LEAVE_EMAIL_NOTIFY_ROLES) — separate from
+        // the in-app notifications above, and from LEAVE_APPROVER_ROLES which
+        // governs who may actually approve/reject. A missing/unconfigured
+        // SMTP setup, or any single send failing, is swallowed inside
+        // emailService and never blocks the employee's request from
+        // succeeding (see services/emailService.js `send()`).
+        const emailRecipients = await User_1.User.find({
+            role: { $in: roles_1.LEAVE_EMAIL_NOTIFY_ROLES },
+            isActive: true,
+        }).select('email employee').populate('employee', 'fullName').lean();
+
+        for (const recipient of emailRecipients) {
+            if (!recipient.email || recipient._id.toString() === req.user?.userId) continue;
+            await emailService_1.emailService.sendLeaveRequestAlert(recipient.email, recipient.employee?.fullName || 'there', {
+                employeeName: employee?.fullName || 'An employee',
+                employeeCode: employee?.employeeCode,
+                department: employee?.department,
+                leaveType: type.name,
+                subType,
+                startDate: startDate.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
+                endDate: endDate.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
+                totalDays,
+                reason: finalReason,
+            });
+        }
+
         await auditService_1.auditService.log(req, {
             action: 'LEAVE_REQUESTED', module: 'LEAVE',
             recordId: request._id.toString(), recordLabel: employee?.fullName,
