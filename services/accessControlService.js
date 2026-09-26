@@ -211,13 +211,49 @@ async function evaluateLoginAccess({ role, employee, req, location, settings }) 
 
         const radius = Number.isFinite(sec.allowedRadiusMeters) ? sec.allowedRadiusMeters : 25;
         const distance = distanceMeters(latitude, longitude, officeLat, officeLng);
-        if (distance > radius) {
+
+        // A reported fix isn't a single point — `accuracy` is the browser's own
+        // radius of uncertainty around it (W3C Geolocation spec: the true
+        // position is "likely" within `accuracy` meters of the reported one).
+        // For a phone/tablet with a real GPS chip that circle is small, so
+        // comparing the raw distance straight against the configured office
+        // radius is fine (kept exactly as before for mobile/tablet).
+        //
+        // A desktop/laptop has no GPS at all — every fix here is Wi-Fi/IP
+        // network positioning, which the accuracy ceiling above already
+        // accepts up to MAX_ACCEPTABLE_ACCURACY_METERS_DESKTOP (3000m) as
+        // "not accurate enough to reject outright". But this distance check
+        // was still comparing that same noisy fix against the tiny 25m
+        // default office radius with zero tolerance — so two desktops sitting
+        // side-by-side in the office, both correctly reporting ~150-400m of
+        // accuracy, pass or fail this check purely on which one's network fix
+        // happened to land closer to the true office point. That is the
+        // reported "some desktops still show Access Denied even though
+        // they're in the same location [as ones that work]" bug: it was never
+        // about location at all, it was this check having no room for the
+        // desktop network-positioning error every desktop login already has.
+        //
+        // Fix: for non-mobile devices, treat the office as "within range" if
+        // the office point falls inside the reported fix's own uncertainty
+        // circle — i.e. allow up to (radius + accuracy), capped at the same
+        // desktop accuracy ceiling so a wildly-off fix still can't buy its way
+        // in. Mobile/tablet get no such allowance (accuracy is already small
+        // and precise there, so the original strict radius still applies).
+        const positionUncertainty = (typeof accuracy === 'number' && Number.isFinite(accuracy)) ? Math.max(accuracy, 0) : 0;
+        const uncertaintyAllowance = device.isMobile ? 0 : Math.min(positionUncertainty, MAX_ACCEPTABLE_ACCURACY_METERS_DESKTOP);
+        const effectiveRadius = radius + uncertaintyAllowance;
+
+        if (distance > effectiveRadius) {
             return {
                 allowed: false,
                 code: 'OUTSIDE_OFFICE_RADIUS',
                 message: 'Access Denied\n\nHRMS can only be accessed from within the office premises. Please try again once you are on-site, or contact HR for remote work approval.',
                 reason: 'Outside Office Radius',
-                details: { latitude, longitude, accuracy, distanceMeters: Math.round(distance), allowedRadiusMeters: radius },
+                details: {
+                    latitude, longitude, accuracy, distanceMeters: Math.round(distance),
+                    allowedRadiusMeters: radius, effectiveRadiusMeters: Math.round(effectiveRadius),
+                    deviceType: device.deviceType,
+                },
             };
         }
     }

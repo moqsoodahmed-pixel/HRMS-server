@@ -27,6 +27,7 @@ const performanceController = require("../controllers/performanceController");
 const exitRequestController = require("../controllers/exitRequestController");
 const orgSettingsController = require("../controllers/orgSettingsController");
 const remoteWorkController = require("../controllers/remoteWorkController");
+const accountAccessController = require("../controllers/accountAccessController");
 const leadController = require("../controllers/leadController");
 // Loaded defensively: if this new file hasn't been deployed yet (e.g. it was
 // missed in a git push, since it's a brand-new file rather than an edit to
@@ -63,6 +64,7 @@ const perfC = unwrap(performanceController);
 const exitC = unwrap(exitRequestController);
 const orgC = unwrap(orgSettingsController);
 const rwc = unwrap(remoteWorkController);
+const aac = unwrap(accountAccessController);
 
 const _upload = require("../middleware/upload");
 const upload = _upload.upload || _upload.default || _upload;
@@ -78,6 +80,10 @@ const COMPENSATION_APPROVE = roles.COMPENSATION_APPROVER_ROLES;
 const REPORTS = roles.REPORT_ROLES;
 const AUDIT = roles.AUDIT_ROLES;
 const REMOTE_WORK_APPROVER = roles.REMOTE_WORK_APPROVER_ROLES;
+// Who may lock/unlock accounts. Per spec: "HR, CTO, Project Head and CEO" —
+// HR_ROLES is exactly that set (ELEVATED_ROLES [FOUNDER_CEO, CTO,
+// SUPER_ADMIN] + HR_ADMIN + PROJECT_HEAD), reused rather than duplicated.
+const ACCOUNT_ACCESS = roles.HR_ROLES;
 
 const router = Router();
 
@@ -286,6 +292,16 @@ router.get('/remote-work-approvals', authenticate, rwc.listApprovals);
 router.get('/remote-work-approvals/employees', authenticate, authorize(...REMOTE_WORK_APPROVER), rwc.searchEmployeesForApproval);
 router.post('/remote-work-approvals', authenticate, authorize(...REMOTE_WORK_APPROVER), rwc.createApproval);
 router.post('/remote-work-approvals/:id/revoke', authenticate, authorize(...REMOTE_WORK_APPROVER), rwc.revokeApproval);
+
+// ─── Account Access (manual lock / unlock) ──────────────────────────────────
+// Lets HR, CTO, Project Head and CEO either restore access to an account the
+// automatic 5-failed-attempts lockout has locked, or deliberately lock one
+// themselves — see controllers/accountAccessController.js for the full
+// rationale and safety rails.
+router.get('/account-access/locked', authenticate, authorize(...ACCOUNT_ACCESS), aac.listLockedAccounts);
+router.get('/account-access/search', authenticate, authorize(...ACCOUNT_ACCESS), aac.searchAccounts);
+router.post('/account-access/:userId/lock', authenticate, authorize(...ACCOUNT_ACCESS), aac.lockAccount);
+router.post('/account-access/:userId/unlock', authenticate, authorize(...ACCOUNT_ACCESS), aac.unlockAccount);
 
 // ─── Data Health Check ────────────────────────────────────────────────────
 // Read-only DB counts, surfaced through the app instead of requiring direct

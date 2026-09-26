@@ -51,8 +51,18 @@ const login = async (req, res, next) => {
             res.status(401).json({ error: { code: 'INVALID_CREDENTIALS', message: 'Invalid email or password' } });
             return;
         }
-        // Check if locked
+        // Check if locked. `lockReason`/`lockedBy` set (see models/User.js)
+        // means an HR/CTO/PROJECT_HEAD/FOUNDER_CEO-tier admin locked this
+        // account deliberately (controllers/accountAccessController.js)
+        // rather than the 5-failed-attempts auto-lock below — the message
+        // stays generic either way (no account-state details to an
+        // unauthenticated caller), but the audit trail still distinguishes
+        // the two so admins reviewing locked accounts can tell them apart.
         if (user.lockedUntil && user.lockedUntil > new Date()) {
+            await auditService_1.auditService.log(req, {
+                action: 'LOGIN_FAILED_LOCKED', module: 'AUTH', recordId: user._id.toString(), recordLabel: email,
+                newValue: { manuallyLocked: Boolean(user.lockReason || user.lockedBy) },
+            });
             res.status(401).json({ error: { code: 'ACCOUNT_LOCKED', message: 'Account temporarily locked. Try again later.' } });
             return;
         }
@@ -111,6 +121,8 @@ const login = async (req, res, next) => {
         // Reset failed attempts
         user.failedLoginAttempts = 0;
         user.lockedUntil = undefined;
+        user.lockReason = undefined;
+        user.lockedBy = undefined;
         user.lastLogin = new Date();
         user.lastLoginIp = req.ip;
         user.lastLoginUserAgent = req.headers['user-agent'];
@@ -199,6 +211,8 @@ const resetPassword = async (req, res, next) => {
         user.passwordResetExpires = undefined;
         user.failedLoginAttempts = 0;
         user.lockedUntil = undefined;
+        user.lockReason = undefined;
+        user.lockedBy = undefined;
         await user.save();
         await auditService_1.auditService.log(req, { action: 'PASSWORD_RESET', module: 'AUTH', recordId: user._id.toString() });
         res.json({ message: 'Password reset successfully' });
