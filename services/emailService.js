@@ -32,6 +32,42 @@ async function send(options) {
         return { failed: true, error: err.message };
     }
 }
+
+/**
+ * A second, completely separate SMTP connection used only for the leave-
+ * request approver alert (see sendLeaveRequestAlert below) — deliberately
+ * not sharing the SMTP_HOST/SMTP_USER/EMAIL_FROM variables above, which
+ * stay pointed at whatever was already configured and already sending
+ * password-reset/welcome/payslip mail. This lets the leave-request emails
+ * go out through a different provider (e.g. Brevo) without touching that
+ * existing setup. Uses its own LEAVE_SMTP_HOST/LEAVE_SMTP_PORT/
+ * LEAVE_SMTP_SECURE/LEAVE_SMTP_USER/LEAVE_SMTP_PASSWORD/LEAVE_EMAIL_FROM
+ * variables so the two never collide in Railway (or any other host) — set
+ * these to your Brevo SMTP credentials, distinct from the SMTP_ ones.
+ */
+const leaveTransporter = nodemailer_1.default.createTransport({
+    host: process.env.LEAVE_SMTP_HOST,
+    port: parseInt(process.env.LEAVE_SMTP_PORT || '587'),
+    secure: process.env.LEAVE_SMTP_SECURE === 'true',
+    auth: {
+        user: process.env.LEAVE_SMTP_USER,
+        pass: process.env.LEAVE_SMTP_PASSWORD,
+    },
+});
+const LEAVE_SMTP_CONFIGURED = Boolean(process.env.LEAVE_SMTP_HOST && process.env.LEAVE_SMTP_USER && process.env.LEAVE_SMTP_PASSWORD);
+async function sendViaLeaveProvider(options) {
+    if (!LEAVE_SMTP_CONFIGURED) {
+        console.warn(`[email:leave] LEAVE_SMTP is not configured — skipped "${options.subject}" to ${options.to}`);
+        return { skipped: true };
+    }
+    try {
+        return await leaveTransporter.sendMail(options);
+    }
+    catch (err) {
+        console.error('[email:leave] send failed:', err.message);
+        return { failed: true, error: err.message };
+    }
+}
 exports.emailService = {
     async sendPasswordReset(email, token, name) {
         const resetUrl = `${process.env.CLIENT_URL}/reset-password?token=${token}`;
@@ -93,7 +129,12 @@ exports.emailService = {
      * utils/roles.js LEAVE_EMAIL_NOTIFY_ROLES) that a new leave request needs
      * review. Called once per recipient from leaveController.createLeaveRequest
      * right after the request is saved; a delivery failure is swallowed by
-     * send() above and never blocks the employee's request from succeeding.
+     * sendViaLeaveProvider() above and never blocks the employee's request
+     * from succeeding. Deliberately sent through the separate
+     * leaveTransporter (the LEAVE_SMTP_ and LEAVE_EMAIL_FROM variables)
+     * rather than send() and the plain SMTP_ variables, so this one email
+     * type can run on its own provider (Brevo) without touching whatever
+     * the rest of the app's emails already use.
      */
     async sendLeaveRequestAlert(email, recipientName, details) {
         const {
@@ -102,8 +143,8 @@ exports.emailService = {
         } = details;
         const dateRange = startDate === endDate ? startDate : `${startDate} to ${endDate}`;
         const reviewUrl = `${process.env.CLIENT_URL}/leave`;
-        await send({
-            from: process.env.EMAIL_FROM || 'DutyLaunch HRMS <noreply@dutylaunch.com>',
+        await sendViaLeaveProvider({
+            from: process.env.LEAVE_EMAIL_FROM || 'DutyLaunch HRMS <noreply@dutylaunch.com>',
             to: email,
             subject: `New leave request from ${employeeName} — action needed`,
             html: `
