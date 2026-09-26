@@ -374,9 +374,15 @@ async function assertCanApprove(req, request) {
  */
 async function emailRequesterOfDecision(employee, status, request, type, extra) {
     try {
-        if (!employee?.user) return;
+        if (!employee?.user) {
+            console.warn(`[leave] skipped decision email — employee ${employee?._id} has no linked user account`);
+            return;
+        }
         const requester = await User_1.User.findById(employee.user).select('email').lean();
-        if (!requester?.email) return;
+        if (!requester?.email) {
+            console.warn(`[leave] skipped decision email — user ${employee.user} has no email on file`);
+            return;
+        }
         await emailService_1.emailService.sendLeaveDecision(requester.email, employee.fullName || 'there', {
             status,
             leaveType: type?.name || 'Leave',

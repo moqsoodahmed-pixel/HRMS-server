@@ -293,6 +293,8 @@ async function buildPayslip(req, employeeId, month, year) {
             if (requester?.email) {
                 const monthName = new Date(year, month - 1, 1).toLocaleDateString('en-IN', { month: 'long' });
                 await emailService_1.emailService.sendPayslip(requester.email, employee.fullName || 'there', monthName, year);
+            } else {
+                console.warn(`[payroll] skipped payslip email — user ${employee.user} has no email on file`);
             }
         } catch (err) {
             console.error('[payroll] failed to email employee of payslip:', err.message);

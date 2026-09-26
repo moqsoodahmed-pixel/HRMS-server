@@ -3,8 +3,10 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.cancelRequest = exports.rejectRequest = exports.approveRequest = exports.getRequest = exports.listRequests = exports.createRequest = void 0;
 const Payroll_1 = require("../models/Payroll");
 const Employee_1 = require("../models/Employee");
+const User_1 = require("../models/User");
 const NotificationAudit_1 = require("../models/NotificationAudit");
 const auditService_1 = require("../services/auditService");
+const emailService_1 = require("../services/emailService");
 const payrollController_1 = require("./payrollController");
 const errorHandler_1 = require("../middleware/errorHandler");
 const helpers_1 = require("../utils/helpers");
@@ -84,7 +86,8 @@ const createRequest = async (req, res, next) => {
         });
 
         // Notify every platform administrator so the approval queue is discoverable.
-        const approvers = await require('../models/User').User.find({ role: { $in: roles_1.COMPENSATION_APPROVER_ROLES }, isActive: true }).select('_id').lean();
+        const approvers = await User_1.User.find({ role: { $in: roles_1.COMPENSATION_APPROVER_ROLES }, isActive: true })
+            .select('_id email').populate('employee', 'fullName').lean();
         await Promise.all(approvers.map((u) => NotificationAudit_1.Notification.create({
             user: u._id,
             type: 'COMPENSATION_REQUESTED',
@@ -93,6 +96,23 @@ const createRequest = async (req, res, next) => {
             relatedModel: 'CompensationRequest',
             relatedId: request._id,
         }).catch((err) => console.error('Notification create failed:', err.message))));
+
+        // Same idea as leaveController's leave-request alert: whoever can
+        // approve/reject (CTO/CEO/Super Admin — see COMPENSATION_APPROVER_ROLES)
+        // gets emailed the moment a request needs their decision. A missing
+        // email or the send itself failing is swallowed by emailService and
+        // never blocks the request from being created.
+        for (const approver of approvers) {
+            if (!approver.email) continue;
+            await emailService_1.emailService.sendCompensationRequestAlert(approver.email, approver.employee?.fullName || 'there', {
+                employeeName: employee.fullName,
+                employeeCode: employee.employeeCode,
+                currentGross: current.gross,
+                proposedGross,
+                changeAmount: request.changeAmount,
+                reason: data.reason,
+            });
+        }
 
         await auditService_1.auditService.log(req, {
             action: 'COMPENSATION_REQUESTED', module: 'PAYROLL',
@@ -146,6 +166,54 @@ const getRequest = async (req, res, next) => {
     catch (err) { next(err); }
 };
 exports.getRequest = getRequest;
+
+/**
+ * Emails both people with a stake in a compensation decision: the employee
+ * whose pay is actually changing, and the HR admin who filed the request on
+ * their behalf (request.requestedBy — the "requester" in this workflow,
+ * distinct from the employee themselves). Each address is looked up from
+ * its own User account, never from anything on the request; a missing
+ * email, a user with no linked account, or the send itself failing are all
+ * swallowed here so they never turn an already-saved decision into an error.
+ */
+async function emailCompensationDecision(request, status, note) {
+    const details = {
+        status,
+        employeeName: request.employee?.fullName,
+        currentGross: request.currentGross,
+        proposedGross: request.proposedGross,
+        note,
+    };
+    try {
+        const employeeUserId = request.employee?.user;
+        if (!employeeUserId) {
+            console.warn(`[payroll] skipped compensation decision email — employee ${request.employee?._id} has no linked user account`);
+        } else {
+            const employeeAccount = await User_1.User.findById(employeeUserId).select('email').lean();
+            if (employeeAccount?.email) {
+                await emailService_1.emailService.sendCompensationDecision(employeeAccount.email, request.employee?.fullName || 'there', details);
+            } else {
+                console.warn(`[payroll] skipped compensation decision email — user ${employeeUserId} has no email on file`);
+            }
+        }
+    } catch (err) {
+        console.error('[payroll] failed to email employee of compensation decision:', err.message);
+    }
+    try {
+        if (!request.requestedBy) {
+            console.warn('[payroll] skipped compensation decision email — request has no requestedBy');
+        } else {
+            const requester = await User_1.User.findById(request.requestedBy).select('email').lean();
+            if (requester?.email) {
+                await emailService_1.emailService.sendCompensationDecision(requester.email, 'there', { ...details, forRequester: true });
+            } else {
+                console.warn(`[payroll] skipped compensation decision email — requester ${request.requestedBy} has no email on file`);
+            }
+        }
+    } catch (err) {
+        console.error('[payroll] failed to email requester of compensation decision:', err.message);
+    }
+}
 
 /**
  * Approves a pending request: applies the proposed figures to a new salary
@@ -204,6 +272,7 @@ const approveRequest = async (req, res, next) => {
             relatedModel: 'CompensationRequest',
             relatedId: request._id,
         }).catch((err) => console.error('Notification create failed:', err.message));
+        await emailCompensationDecision(request, 'APPROVED', request.reviewComments);
 
         await auditService_1.auditService.log(req, {
             action: 'COMPENSATION_APPROVED', module: 'PAYROLL',
@@ -227,7 +296,7 @@ const rejectRequest = async (req, res, next) => {
         const reason = String(req.body?.comments || req.body?.reason || '').trim();
         if (!reason) throw new errorHandler_1.AppError('A rejection reason is required', 400, 'VALIDATION_ERROR');
 
-        const request = await Payroll_1.CompensationRequest.findById(id).populate('employee', 'fullName');
+        const request = await Payroll_1.CompensationRequest.findById(id).populate('employee', 'fullName user');
         if (!request) throw new errorHandler_1.AppError('Compensation request not found', 404, 'NOT_FOUND');
         if (request.status !== 'PENDING') {
             throw new errorHandler_1.AppError(`This request is already ${request.status.toLowerCase()}`, 400, 'INVALID_STATUS');
@@ -247,6 +316,20 @@ const rejectRequest = async (req, res, next) => {
             relatedModel: 'CompensationRequest',
             relatedId: request._id,
         }).catch((err) => console.error('Notification create failed:', err.message));
+        // The employee themselves previously got no in-app notice at all on a
+        // rejection (only the HR admin who filed it did) — that gap applies
+        // to email too, so this sends to both the same way approval does.
+        if (request.employee.user) {
+            await NotificationAudit_1.Notification.create({
+                user: request.employee.user,
+                type: 'COMPENSATION_REJECTED',
+                title: 'Compensation change rejected',
+                message: `A proposed compensation change for you was rejected: ${reason}`,
+                relatedModel: 'CompensationRequest',
+                relatedId: request._id,
+            }).catch((err) => console.error('Notification create failed:', err.message));
+        }
+        await emailCompensationDecision(request, 'REJECTED', reason);
 
         await auditService_1.auditService.log(req, {
             action: 'COMPENSATION_REJECTED', module: 'PAYROLL',

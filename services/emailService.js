@@ -71,7 +71,12 @@ async function send({ to, subject, html }) {
             const body = await res.text().catch(() => '');
             throw new Error(`Brevo API responded ${res.status}: ${body}`);
         }
-        return await res.json();
+        const result = await res.json();
+        // A success here previously left no trace in the logs at all, which
+        // made it impossible to tell "this was never attempted" apart from
+        // "this was sent" when something downstream wasn't showing up.
+        console.log(`[email] sent "${subject}" to ${to} (messageId: ${result?.messageId || 'n/a'})`);
+        return result;
     }
     catch (err) {
         console.error('[email] send failed:', err.message);
@@ -166,6 +171,74 @@ exports.emailService = {
             <tr><td style="padding: 6px 0; color: #6b7280;">Leave type</td><td style="padding: 6px 0;"><strong>${leaveType}${subType ? ` (${subType})` : ''}</strong></td></tr>
             <tr><td style="padding: 6px 0; color: #6b7280;">Dates</td><td style="padding: 6px 0;"><strong>${dateRange}</strong></td></tr>
             <tr><td style="padding: 6px 0; color: #6b7280;">Duration</td><td style="padding: 6px 0;"><strong>${totalDays} day(s)</strong></td></tr>
+            ${note ? `<tr><td style="padding: 6px 0; color: #6b7280; vertical-align: top;">${approved ? 'Note' : 'Reason'}</td><td style="padding: 6px 0;">${note}</td></tr>` : ''}
+          </table>
+          <a href="${reviewUrl}" style="display: inline-block; padding: 12px 24px; background: #1e40af; color: white; text-decoration: none; border-radius: 4px;">View in HRMS</a>
+          <hr/>
+          <small style="color: #6b7280;">DutyLaunch Solutions Private Limited</small>
+        </div>
+      `,
+        });
+    },
+    /**
+     * Notifies one platform administrator (CTO / CEO / Super Admin — see
+     * utils/roles.js COMPENSATION_APPROVER_ROLES) that an employee's proposed
+     * compensation change needs their decision. Called once per recipient
+     * from compensationController.createRequest right after the request is
+     * saved; a delivery failure is swallowed by send() above and never
+     * blocks the request from being filed.
+     */
+    async sendCompensationRequestAlert(email, recipientName, details) {
+        const { employeeName, employeeCode, currentGross, proposedGross, changeAmount, reason } = details;
+        const direction = proposedGross >= currentGross ? 'increase' : 'decrease';
+        const reviewUrl = `${process.env.CLIENT_URL}/payroll`;
+        await send({
+            to: email,
+            subject: `Compensation change request from ${employeeName} — action needed`,
+            html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #1e40af;">DutyLaunch HRMS</h2>
+          <p>Hi ${recipientName},</p>
+          <p>A compensation change has been proposed for <strong>${employeeName}</strong>${employeeCode ? ` (${employeeCode})` : ''} and is awaiting your decision.</p>
+          <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+            <tr><td style="padding: 6px 0; color: #6b7280;">Current gross</td><td style="padding: 6px 0;"><strong>₹${currentGross}</strong></td></tr>
+            <tr><td style="padding: 6px 0; color: #6b7280;">Proposed gross</td><td style="padding: 6px 0;"><strong>₹${proposedGross}</strong></td></tr>
+            <tr><td style="padding: 6px 0; color: #6b7280;">Change</td><td style="padding: 6px 0;"><strong>${direction} of ₹${Math.abs(changeAmount)}</strong></td></tr>
+            ${reason ? `<tr><td style="padding: 6px 0; color: #6b7280; vertical-align: top;">Reason</td><td style="padding: 6px 0;">${reason}</td></tr>` : ''}
+          </table>
+          <a href="${reviewUrl}" style="display: inline-block; padding: 12px 24px; background: #1e40af; color: white; text-decoration: none; border-radius: 4px;">Review request</a>
+          <hr/>
+          <small style="color: #6b7280;">DutyLaunch Solutions Private Limited</small>
+        </div>
+      `,
+        });
+    },
+    /**
+     * Tells whoever has a stake in a compensation decision — the affected
+     * employee, and separately the HR admin who filed the request on their
+     * behalf — that it's been approved or rejected. Called from
+     * compensationController's emailCompensationDecision right after the
+     * decision is saved, once per recipient, each to that person's own
+     * account email (never anyone else's — see emailCompensationDecision).
+     */
+    async sendCompensationDecision(email, recipientName, details) {
+        const { status, employeeName, currentGross, proposedGross, note, forRequester } = details;
+        const approved = status === 'APPROVED';
+        const reviewUrl = `${process.env.CLIENT_URL}/payroll`;
+        const headline = forRequester
+            ? `The compensation change you requested for <strong>${employeeName}</strong> has been <strong style="color: ${approved ? '#16a34a' : '#dc2626'};">${approved ? 'approved' : 'rejected'}</strong>.`
+            : `A proposed change to your compensation has been <strong style="color: ${approved ? '#16a34a' : '#dc2626'};">${approved ? 'approved' : 'rejected'}</strong>.`;
+        await send({
+            to: email,
+            subject: `Compensation change ${approved ? 'approved' : 'rejected'} - DutyLaunch HRMS`,
+            html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #1e40af;">DutyLaunch HRMS</h2>
+          <p>Hi ${recipientName},</p>
+          <p>${headline}</p>
+          <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+            <tr><td style="padding: 6px 0; color: #6b7280;">Current gross</td><td style="padding: 6px 0;"><strong>₹${currentGross}</strong></td></tr>
+            <tr><td style="padding: 6px 0; color: #6b7280;">Proposed gross</td><td style="padding: 6px 0;"><strong>₹${proposedGross}</strong></td></tr>
             ${note ? `<tr><td style="padding: 6px 0; color: #6b7280; vertical-align: top;">${approved ? 'Note' : 'Reason'}</td><td style="padding: 6px 0;">${note}</td></tr>` : ''}
           </table>
           <a href="${reviewUrl}" style="display: inline-block; padding: 12px 24px; background: #1e40af; color: white; text-decoration: none; border-radius: 4px;">View in HRMS</a>
