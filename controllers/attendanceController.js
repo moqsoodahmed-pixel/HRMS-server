@@ -10,6 +10,46 @@ const errorHandler_1 = require("../middleware/errorHandler");
 const helpers_1 = require("../utils/helpers");
 const zod_1 = require("zod");
 const telegramService = require("../services/telegramService");
+const { getOrCreateSettings } = require("./orgSettingsController");
+const { evaluateLoginAccess } = require("../services/accessControlService");
+
+/**
+ * Re-applies the SAME device/location policy login already enforces (see
+ * services/accessControlService.js) to check-in/check-out. Login-only
+ * enforcement had a real gap: once a device is authenticated (a valid
+ * session/"Remember me" token), attendance actions never re-checked device
+ * type or location at all, so a mobile device that ever obtained a session
+ * — or simply kept an existing session from before mobile restriction was
+ * turned on — could check in/out from anywhere, indefinitely. This is the
+ * fix for "some mobile devices can log in from any location and still
+ * check in": it closes the loophole at the point of the action itself, not
+ * just at login.
+ *
+ * Returns `null` when allowed, or an Express-ready `{ status, body }` when
+ * the caller should be denied.
+ */
+async function assertAttendanceAccess(req, employee) {
+    const settingsDoc = await getOrCreateSettings();
+    const location = req.body?.location && typeof req.body.location === 'object'
+        ? {
+            latitude: Number(req.body.location.latitude),
+            longitude: Number(req.body.location.longitude),
+            accuracy: req.body.location.accuracy != null ? Number(req.body.location.accuracy) : undefined,
+        }
+        : null;
+    const access = await evaluateLoginAccess({ role: req.user?.role, employee, req, location, settings: settingsDoc.security });
+    if (!access.allowed) {
+        auditService_1.auditService.log(req, {
+            action: 'ATTENDANCE_ACCESS_DENIED',
+            module: 'ATTENDANCE',
+            recordId: employee?._id?.toString(),
+            recordLabel: employee?.fullName,
+            newValue: { reason: access.reason, code: access.code, ...access.details },
+        }).catch(() => { });
+        return { status: 403, body: { error: { code: access.code, message: access.message } } };
+    }
+    return null;
+}
 
 const DEFAULT_WORK_START_HOUR = parseInt(process.env.WORK_START_HOUR || '10', 10);
 const DEFAULT_WORK_START_MINUTE = parseInt(process.env.WORK_START_MINUTE || '30', 10);
@@ -213,6 +253,8 @@ const checkIn = async (req, res, next) => {
     try {
         const emp = await Employee_1.Employee.findOne({ user: req.user?.userId });
         if (!emp) throw new errorHandler_1.AppError('No employee profile is linked to your account', 404, 'NO_EMPLOYEE_PROFILE');
+        const denied = await assertAttendanceAccess(req, emp);
+        if (denied) { res.status(denied.status).json(denied.body); return; }
         const todayStart = (0, helpers_1.startOfDay)(new Date());
         const existing = await Attendance_1.Attendance.findOne({ employee: emp._id, date: { $gte: todayStart } });
         if (existing?.checkIn) {
@@ -247,6 +289,8 @@ const checkOut = async (req, res, next) => {
     try {
         const emp = await Employee_1.Employee.findOne({ user: req.user?.userId });
         if (!emp) throw new errorHandler_1.AppError('No employee profile is linked to your account', 404, 'NO_EMPLOYEE_PROFILE');
+        const denied = await assertAttendanceAccess(req, emp);
+        if (denied) { res.status(denied.status).json(denied.body); return; }
         const todayStart = (0, helpers_1.startOfDay)(new Date());
         const record = await Attendance_1.Attendance.findOne({ employee: emp._id, date: { $gte: todayStart } });
         if (!record?.checkIn) {

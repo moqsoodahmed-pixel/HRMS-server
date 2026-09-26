@@ -85,18 +85,23 @@ const ACTIVITY_FEED_ROLES = [...ELEVATED_ROLES, 'HR_ADMIN', 'AUDITOR', 'DIRECTOR
 /**
  * Roles exempt from BOTH the mobile-device login restriction and the
  * office-geo-fencing login restriction (see services/accessControlService.js,
- * wired into controllers/authController.js login()). Per spec this is "CEO,
- * CTO, Project Head" — mapped onto this schema's actual role names:
- * FOUNDER_CEO (the CEO), CTO, and PROJECT_HEAD. SUPER_ADMIN is included
- * alongside them because utils/roles.js already documents it as a
- * backward-compatible, functionally-identical stand-in for FOUNDER_CEO on
- * pre-migration accounts — never because of a name/email, only the role
- * enum value. This list is deliberately separate from ELEVATED_ROLES (which
- * governs RBAC route access, not device/location policy) so device/location
- * exemption can never silently change if ELEVATED_ROLES is ever edited for
- * an unrelated reason.
+ * wired into controllers/authController.js login(), and also re-checked on
+ * attendance check-in/check-out — see attendanceController.js). Per spec
+ * this is "CTO, CEO, Founder, Director and Project Head" — mapped onto this
+ * schema's actual role names: FOUNDER_CEO (the CEO/Founder), CTO, DIRECTOR,
+ * and PROJECT_HEAD. SUPER_ADMIN is included alongside them because
+ * utils/roles.js already documents it as a backward-compatible,
+ * functionally-identical stand-in for FOUNDER_CEO on pre-migration accounts
+ * — never because of a name/email, only the role enum value. DIRECTOR was
+ * previously missing from this list (it was only being pulled into
+ * ATTENDANCE_EXEMPT_ROLES below), which meant a Director's login was still
+ * being device/location-restricted even though the spec names them
+ * explicitly — fixed by adding it here. This list is deliberately separate
+ * from ELEVATED_ROLES (which governs RBAC route access, not device/location
+ * policy) so device/location exemption can never silently change if
+ * ELEVATED_ROLES is ever edited for an unrelated reason.
  */
-const DEVICE_LOCATION_EXEMPT_ROLES = [...ELEVATED_ROLES, 'PROJECT_HEAD'];
+const DEVICE_LOCATION_EXEMPT_ROLES = [...ELEVATED_ROLES, 'PROJECT_HEAD', 'DIRECTOR'];
 
 /**
  * Roles that must NOT appear in, or be counted by, the attendance "absent"
@@ -105,14 +110,15 @@ const DEVICE_LOCATION_EXEMPT_ROLES = [...ELEVATED_ROLES, 'PROJECT_HEAD'];
  * makes the dashboard's Absent-Today number look wrong. Per the request this
  * is "Project Head, CTO, Director, CEO / Founder": FOUNDER_CEO (+ SUPER_ADMIN,
  * its documented backward-compatible equivalent), CTO, PROJECT_HEAD and
- * DIRECTOR. Built on DEVICE_LOCATION_EXEMPT_ROLES (which already omits daily
- * check-in for these leaders) plus DIRECTOR, and kept as its own list so
- * "who is hidden from Absent" can never silently drift from the RBAC groups
- * above. Excludes an employee from BOTH the dashboard Absent-Today count
- * (dashboardController) AND the drill-down list (attendanceController
- * getAbsentees), so the number and the names always match.
+ * DIRECTOR — DEVICE_LOCATION_EXEMPT_ROLES above now already includes all
+ * four, so this is just an alias of it, kept as its own name so "who is
+ * hidden from Absent" reads independently of the device/location list even
+ * though the values currently match. Excludes an employee from BOTH the
+ * dashboard Absent-Today count (dashboardController) AND the drill-down
+ * list (attendanceController getAbsentees), so the number and the names
+ * always match.
  */
-const ATTENDANCE_EXEMPT_ROLES = [...DEVICE_LOCATION_EXEMPT_ROLES, 'DIRECTOR'];
+const ATTENDANCE_EXEMPT_ROLES = [...DEVICE_LOCATION_EXEMPT_ROLES];
 
 /**
  * Roles allowed to grant a Temporary Remote Work Access exception (see

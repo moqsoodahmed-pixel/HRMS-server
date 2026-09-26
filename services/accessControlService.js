@@ -35,7 +35,23 @@ const { distanceMeters, isValidCoordinate } = require('../utils/geo');
 // spec's explicitly-configurable list (radius/coordinates/enable-toggles
 // are), so it's a documented constant here rather than a hidden magic number
 // inline.
+//
+// THIS MUST BE DEVICE-TYPE-AWARE. A phone/tablet has a real GPS chip and
+// `enableHighAccuracy: true` (lib/geolocation.js) routinely gets it well
+// under 150m. A desktop/laptop has NO GPS hardware at all — the browser can
+// only ever do Wi-Fi/IP-based network positioning there, which the W3C
+// Geolocation spec itself documents as typically hundreds of meters to a
+// few kilometers, even standing still on strong known Wi-Fi. Using the same
+// 150m ceiling for both meant every desktop/laptop login was rejected at
+// this accuracy check before the actual office-radius distance was ever
+// looked at — this is the reported "still can't log in from the office on
+// any desktop/laptop, even from 25m away" bug: it was never reaching the
+// distance comparison at all. Desktops get a much larger, network-
+// positioning-appropriate ceiling; only a fix bad enough to be non-
+// actionable (multiple km) is rejected outright. Mobile/tablet keep the
+// original, GPS-appropriate ceiling.
 const MAX_ACCEPTABLE_ACCURACY_METERS = 150;
+const MAX_ACCEPTABLE_ACCURACY_METERS_DESKTOP = 3000;
 
 /**
  * True if `employee` has an ACTIVE RemoteWorkApproval whose [startDate,
@@ -167,13 +183,14 @@ async function evaluateLoginAccess({ role, employee, req, location, settings }) 
                 details: { latitude, longitude },
             };
         }
-        if (typeof accuracy === 'number' && Number.isFinite(accuracy) && accuracy > MAX_ACCEPTABLE_ACCURACY_METERS) {
+        const accuracyCeiling = device.isMobile ? MAX_ACCEPTABLE_ACCURACY_METERS : MAX_ACCEPTABLE_ACCURACY_METERS_DESKTOP;
+        if (typeof accuracy === 'number' && Number.isFinite(accuracy) && accuracy > accuracyCeiling) {
             return {
                 allowed: false,
                 code: 'LOCATION_ACCURACY_TOO_LOW',
                 message: 'Access Denied\n\nYour device could not determine a precise enough location. Please move to an area with a clearer GPS/network signal and try again.',
                 reason: 'Poor GPS Accuracy',
-                details: { latitude, longitude, accuracy },
+                details: { latitude, longitude, accuracy, accuracyCeiling, deviceType: device.deviceType },
             };
         }
 
