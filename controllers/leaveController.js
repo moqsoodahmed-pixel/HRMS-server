@@ -362,11 +362,40 @@ async function assertCanApprove(req, request) {
     }
 }
 
+/**
+ * Emails the employee who filed the request that it's been approved/rejected,
+ * once the in-app notify() above has already fired. Looks the requester's
+ * address up from their User account (the same login email used everywhere
+ * else — password resets, OTPs, payslips), never from anything on the
+ * request itself, so it always reaches the actual account holder. A missing
+ * email, a user with no linked account, or the send itself failing are all
+ * swallowed the same way sendLeaveRequestAlert's failures are — this must
+ * never turn an already-saved approve/reject into an error response.
+ */
+async function emailRequesterOfDecision(employee, status, request, type, extra) {
+    try {
+        if (!employee?.user) return;
+        const requester = await User_1.User.findById(employee.user).select('email').lean();
+        if (!requester?.email) return;
+        await emailService_1.emailService.sendLeaveDecision(requester.email, employee.fullName || 'there', {
+            status,
+            leaveType: type?.name || 'Leave',
+            subType: request.subType,
+            startDate: new Date(request.startDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
+            endDate: new Date(request.endDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }),
+            totalDays: request.totalDays,
+            ...extra,
+        });
+    } catch (err) {
+        console.error('[leave] failed to email requester of decision:', err.message);
+    }
+}
+
 const approveLeave = async (req, res, next) => {
     try {
         const { id } = req.params;
         (0, helpers_1.assertObjectId)(id, 'leave request id');
-        const request = await Leave_1.LeaveRequest.findById(id);
+        const request = await Leave_1.LeaveRequest.findById(id).populate('leaveType', 'name');
         if (!request) throw new errorHandler_1.AppError('Leave request not found', 404, 'NOT_FOUND');
         if (request.status !== 'PENDING') {
             throw new errorHandler_1.AppError(`This request is already ${request.status.toLowerCase()}`, 400, 'INVALID_STATUS');
@@ -388,6 +417,7 @@ const approveLeave = async (req, res, next) => {
             relatedModel: 'LeaveRequest',
             relatedId: request._id,
         });
+        await emailRequesterOfDecision(employee, 'APPROVED', request, request.leaveType, { note: request.managerNote });
         await auditService_1.auditService.log(req, { action: 'LEAVE_APPROVED', module: 'LEAVE', recordId: id, recordLabel: employee?.fullName });
         res.json({ data: request, message: 'Leave approved' });
     }
@@ -401,7 +431,7 @@ const rejectLeave = async (req, res, next) => {
         (0, helpers_1.assertObjectId)(id, 'leave request id');
         const reason = String(req.body?.reason || '').trim();
         if (!reason) throw new errorHandler_1.AppError('A rejection reason is required', 400, 'VALIDATION_ERROR');
-        const request = await Leave_1.LeaveRequest.findById(id);
+        const request = await Leave_1.LeaveRequest.findById(id).populate('leaveType', 'name');
         if (!request) throw new errorHandler_1.AppError('Leave request not found', 404, 'NOT_FOUND');
         if (request.status !== 'PENDING') {
             throw new errorHandler_1.AppError(`This request is already ${request.status.toLowerCase()}`, 400, 'INVALID_STATUS');
@@ -423,6 +453,7 @@ const rejectLeave = async (req, res, next) => {
             relatedModel: 'LeaveRequest',
             relatedId: request._id,
         });
+        await emailRequesterOfDecision(employee, 'REJECTED', request, request.leaveType, { note: reason });
         await auditService_1.auditService.log(req, { action: 'LEAVE_REJECTED', module: 'LEAVE', recordId: id, recordLabel: employee?.fullName });
         res.json({ data: request, message: 'Leave rejected' });
     }

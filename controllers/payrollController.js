@@ -3,8 +3,10 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.getPayrollSummary = exports.updatePayslipStatus = exports.generatePayslipsBulk = exports.downloadPayslip = exports.generatePayslip = exports.getPayslips = exports.createSalaryStructure = exports.getSalaryStructures = exports.listSalaryStructures = void 0;
 const Payroll_1 = require("../models/Payroll");
 const Employee_1 = require("../models/Employee");
+const User_1 = require("../models/User");
 const NotificationAudit_1 = require("../models/NotificationAudit");
 const auditService_1 = require("../services/auditService");
+const emailService_1 = require("../services/emailService");
 const pdfService_1 = require("../services/pdfService");
 const storageService_1 = require("../services/storageService");
 const errorHandler_1 = require("../middleware/errorHandler");
@@ -278,6 +280,22 @@ async function buildPayslip(req, employeeId, month, year) {
             });
         } catch (err) {
             console.error('Notification create failed:', err.message);
+        }
+
+        // Email the employee this payslip is actually for — and only them,
+        // never HR/finance/whoever generated it — the same way the leave-
+        // request decision emails work (see leaveController.js
+        // emailRequesterOfDecision): look their address up from their own
+        // User account, and never let a lookup or send failure here turn an
+        // already-created payslip into an error response.
+        try {
+            const requester = await User_1.User.findById(employee.user).select('email').lean();
+            if (requester?.email) {
+                const monthName = new Date(year, month - 1, 1).toLocaleDateString('en-IN', { month: 'long' });
+                await emailService_1.emailService.sendPayslip(requester.email, employee.fullName || 'there', monthName, year);
+            }
+        } catch (err) {
+            console.error('[payroll] failed to email employee of payslip:', err.message);
         }
     }
     return payslip;

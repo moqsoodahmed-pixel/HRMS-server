@@ -122,6 +122,12 @@ exports.emailService = {
       `,
         });
     },
+    /**
+     * Called from payrollController.buildPayslip right after a payslip is
+     * generated (single or bulk) — always to that one employee's own account
+     * email, looked up the same way as everywhere else in this file, never
+     * to HR/finance/whoever triggered the generation.
+     */
     async sendPayslip(email, name, month, year) {
         await send({
             to: email,
@@ -132,6 +138,39 @@ exports.emailService = {
           <p>Hi ${name},</p>
           <p>Your payslip for ${month} ${year} has been generated. Please login to the portal to view and download it.</p>
           <a href="${process.env.CLIENT_URL}/portal/payslips" style="display: inline-block; padding: 12px 24px; background: #1e40af; color: white; text-decoration: none; border-radius: 4px;">View Payslip</a>
+        </div>
+      `,
+        });
+    },
+    /**
+     * Tells the employee who filed a leave request that it's been approved
+     * or rejected. Called from leaveController.approveLeave/rejectLeave
+     * right after the decision is saved, always to that employee's own
+     * account email (see leaveController's emailRequesterOfDecision) —
+     * never anyone else's.
+     */
+    async sendLeaveDecision(email, employeeName, details) {
+        const { status, leaveType, subType, startDate, endDate, totalDays, note } = details;
+        const dateRange = startDate === endDate ? startDate : `${startDate} to ${endDate}`;
+        const approved = status === 'APPROVED';
+        const reviewUrl = `${process.env.CLIENT_URL}/leave`;
+        await send({
+            to: email,
+            subject: `Your leave request was ${approved ? 'approved' : 'rejected'} - DutyLaunch HRMS`,
+            html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #1e40af;">DutyLaunch HRMS</h2>
+          <p>Hi ${employeeName},</p>
+          <p>Your leave request has been <strong style="color: ${approved ? '#16a34a' : '#dc2626'};">${approved ? 'approved' : 'rejected'}</strong>.</p>
+          <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+            <tr><td style="padding: 6px 0; color: #6b7280;">Leave type</td><td style="padding: 6px 0;"><strong>${leaveType}${subType ? ` (${subType})` : ''}</strong></td></tr>
+            <tr><td style="padding: 6px 0; color: #6b7280;">Dates</td><td style="padding: 6px 0;"><strong>${dateRange}</strong></td></tr>
+            <tr><td style="padding: 6px 0; color: #6b7280;">Duration</td><td style="padding: 6px 0;"><strong>${totalDays} day(s)</strong></td></tr>
+            ${note ? `<tr><td style="padding: 6px 0; color: #6b7280; vertical-align: top;">${approved ? 'Note' : 'Reason'}</td><td style="padding: 6px 0;">${note}</td></tr>` : ''}
+          </table>
+          <a href="${reviewUrl}" style="display: inline-block; padding: 12px 24px; background: #1e40af; color: white; text-decoration: none; border-radius: 4px;">View in HRMS</a>
+          <hr/>
+          <small style="color: #6b7280;">DutyLaunch Solutions Private Limited</small>
         </div>
       `,
         });
