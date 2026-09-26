@@ -27,7 +27,6 @@ const performanceController = require("../controllers/performanceController");
 const exitRequestController = require("../controllers/exitRequestController");
 const orgSettingsController = require("../controllers/orgSettingsController");
 const remoteWorkController = require("../controllers/remoteWorkController");
-const accountAccessController = require("../controllers/accountAccessController");
 const leadController = require("../controllers/leadController");
 // Loaded defensively: if this new file hasn't been deployed yet (e.g. it was
 // missed in a git push, since it's a brand-new file rather than an edit to
@@ -39,6 +38,16 @@ try {
     diagnosticsController = require("../controllers/diagnosticsController");
 } catch (err) {
     console.error("[routes/index] diagnosticsController.js not found — /api/diagnostics/data-health will return 503 until HRMS-server/controllers/diagnosticsController.js is deployed.", err.message);
+}
+// Same defensive load, same reason — accountAccessController.js is a
+// brand-new file (the manual lock/unlock feature) and a deploy that misses
+// it must NOT take the entire server down. Missing → the three
+// /api/account-access/* routes below return 503 instead of crashing boot.
+let accountAccessController = null;
+try {
+    accountAccessController = require("../controllers/accountAccessController");
+} catch (err) {
+    console.error("[routes/index] accountAccessController.js not found — /api/account-access/* will return 503 until HRMS-server/controllers/accountAccessController.js is deployed.", err.message);
 }
 const dailyReportController = require("../controllers/dailyReportController");
 const appointmentLetterController = require("../controllers/appointmentLetterController");
@@ -64,7 +73,10 @@ const perfC = unwrap(performanceController);
 const exitC = unwrap(exitRequestController);
 const orgC = unwrap(orgSettingsController);
 const rwc = unwrap(remoteWorkController);
-const aac = unwrap(accountAccessController);
+// Not unwrapped like the others above — it can be null (see the defensive
+// require at the top of this file), and unwrap() would throw on null.
+const aac = accountAccessController ? unwrap(accountAccessController) : null;
+const ACCOUNT_ACCESS_NOT_DEPLOYED = (req, res) => res.status(503).json({ error: { code: 'NOT_DEPLOYED', message: 'accountAccessController.js has not been deployed to this server yet.' } });
 
 const _upload = require("../middleware/upload");
 const upload = _upload.upload || _upload.default || _upload;
@@ -298,10 +310,10 @@ router.post('/remote-work-approvals/:id/revoke', authenticate, authorize(...REMO
 // automatic 5-failed-attempts lockout has locked, or deliberately lock one
 // themselves — see controllers/accountAccessController.js for the full
 // rationale and safety rails.
-router.get('/account-access/locked', authenticate, authorize(...ACCOUNT_ACCESS), aac.listLockedAccounts);
-router.get('/account-access/search', authenticate, authorize(...ACCOUNT_ACCESS), aac.searchAccounts);
-router.post('/account-access/:userId/lock', authenticate, authorize(...ACCOUNT_ACCESS), aac.lockAccount);
-router.post('/account-access/:userId/unlock', authenticate, authorize(...ACCOUNT_ACCESS), aac.unlockAccount);
+router.get('/account-access/locked', authenticate, authorize(...ACCOUNT_ACCESS), aac ? aac.listLockedAccounts : ACCOUNT_ACCESS_NOT_DEPLOYED);
+router.get('/account-access/search', authenticate, authorize(...ACCOUNT_ACCESS), aac ? aac.searchAccounts : ACCOUNT_ACCESS_NOT_DEPLOYED);
+router.post('/account-access/:userId/lock', authenticate, authorize(...ACCOUNT_ACCESS), aac ? aac.lockAccount : ACCOUNT_ACCESS_NOT_DEPLOYED);
+router.post('/account-access/:userId/unlock', authenticate, authorize(...ACCOUNT_ACCESS), aac ? aac.unlockAccount : ACCOUNT_ACCESS_NOT_DEPLOYED);
 
 // ─── Data Health Check ────────────────────────────────────────────────────
 // Read-only DB counts, surfaced through the app instead of requiring direct
