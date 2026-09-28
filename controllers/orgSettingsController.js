@@ -27,6 +27,27 @@ exports.getSettings = getSettings;
 
 const timeSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use 24-hour HH:mm').optional().or(z.literal(''));
 
+/**
+ * Accepts an exact IPv4 address, an IPv4 CIDR range (e.g. "203.0.113.0/24",
+ * with real octet-range and prefix-length checking, not just regex shape),
+ * or an IPv6 address (format-only check — see utils/geo.js's doc comment
+ * for why CIDR isn't supported there). Used for
+ * security.officeIpAllowlist below.
+ */
+function isPlausibleIpOrCidr(value) {
+    const v = String(value || '').trim();
+    if (!v) return false;
+    if (v.includes(':')) return /^[0-9a-fA-F:]+$/.test(v); // loose IPv6 shape check
+    const [ipPart, prefixPart] = v.split('/');
+    const octets = ipPart.split('.');
+    if (octets.length !== 4) return false;
+    const octetsValid = octets.every((o) => /^\d{1,3}$/.test(o) && Number(o) >= 0 && Number(o) <= 255);
+    if (!octetsValid) return false;
+    if (prefixPart === undefined) return true;
+    return /^\d{1,2}$/.test(prefixPart) && Number(prefixPart) >= 0 && Number(prefixPart) <= 32;
+}
+const officeIpEntry = z.string().trim().refine(isPlausibleIpOrCidr, 'Enter a valid IP address or CIDR range, e.g. 203.0.113.5 or 203.0.113.0/24');
+
 const updateSchema = z.object({
     organization: z.object({
         companyName: z.string().max(160).optional().or(z.literal('')),
@@ -73,6 +94,13 @@ const updateSchema = z.object({
         officeLatitude: z.union([z.number(), z.string().transform((v) => (v === '' ? undefined : Number(v)))]).optional().refine((v) => v === undefined || (v >= -90 && v <= 90), 'Latitude must be between -90 and 90'),
         officeLongitude: z.union([z.number(), z.string().transform((v) => (v === '' ? undefined : Number(v)))]).optional().refine((v) => v === undefined || (v >= -180 && v <= 180), 'Longitude must be between -180 and 180'),
         allowedRadiusMeters: z.union([z.number(), z.string().transform((v) => (v === '' ? undefined : Number(v)))]).optional().refine((v) => v === undefined || v > 0, 'Radius must be greater than 0'),
+        // Alternate/corroborating "is this login from the office" signal —
+        // see models/OrgSettings.js and accessControlService.js for why this
+        // exists alongside (never instead of) the lat/lng radius check.
+        // Empty array (the default) is a no-op. Filters out blank lines so
+        // the textarea-with-one-entry-per-line UI in Settings.jsx can be
+        // saved without every entry needing to be non-empty first.
+        officeIpAllowlist: z.array(officeIpEntry).max(20).optional(),
     }).optional(),
 });
 

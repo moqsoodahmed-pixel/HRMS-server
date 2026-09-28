@@ -58,6 +58,16 @@ const orgSettingsSchema = new mongoose.Schema({
         officeLongitude: { type: Number },
         // Meters. 25m default per spec; configurable, never hardcoded downstream.
         allowedRadiusMeters: { type: Number, default: 25 },
+        // Optional alternate/corroborating proof of office presence, checked
+        // before the GPS/Wi-Fi position check (see accessControlService.js's
+        // "Office IP allowlist" comment for the full reasoning — in short,
+        // network-based geolocation can misreport an office's position by
+        // kilometers when its Wi-Fi access points aren't in the browser's
+        // location database, which no amount of coordinate-radius tolerance
+        // can fix). Each entry is the office's known public IP address, or
+        // an IPv4 CIDR range (e.g. "203.0.113.0/24"). Empty by default — a
+        // no-op until an admin fills it in.
+        officeIpAllowlist: { type: [String], default: [] },
     },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 }, { timestamps: true });
