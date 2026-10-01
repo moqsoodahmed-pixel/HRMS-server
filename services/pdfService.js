@@ -123,8 +123,8 @@ exports.pdfService = {
 
         // ── 6. Page geometry (A4) ─────────────────────────────────────────────────
         const PW = 595.28;
-        const ML = 36;               // left margin
-        const MR = 36;               // right margin
+        const ML = 15;               // left margin
+        const MR = 15;               // right margin
         const BW = PW - ML - MR;     // box width  = 523.28
         const BX = ML;               // box left
 
@@ -136,19 +136,20 @@ exports.pdfService = {
         const chunks = [];
         doc.on('data', c => chunks.push(c));
 
-        // ─── line drawing helpers (all hairline 0.5pt, #999 colour) ──────────────
-        const LINE_COLOR = '#999999';
+        // ─── line drawing helpers ─────────────────────────────────────────────────
+        const LINE_COLOR = '#000000';  // standard thin black lines
         const LINE_W = 0.5;
 
-        // Draw a single horizontal hairline across the full box width
-        function hline(y) {
-            doc.save().lineWidth(LINE_W).moveTo(BX, y).lineTo(BX + BW, y).stroke(LINE_COLOR).restore();
+        // Draw a horizontal line across the full box width (optional colour override)
+        function hline(y, color, w) {
+            color = color || LINE_COLOR;
+            doc.save().lineWidth(w || LINE_W).moveTo(BX, y).lineTo(BX + BW, y).stroke(color).restore();
         }
-        // Draw a vertical hairline from y1 to y2 at x
+        // Draw a vertical line from y1 to y2 at x
         function vline(x, y1, y2) {
             doc.save().lineWidth(LINE_W).moveTo(x, y1).lineTo(x, y2).stroke(LINE_COLOR).restore();
         }
-        // Draw outer rectangle (same hairline weight)
+        // Draw outer rectangle
         function outerBox(y1, y2) {
             doc.save().lineWidth(LINE_W).rect(BX, y1, BW, y2 - y1).stroke(LINE_COLOR).restore();
         }
@@ -165,19 +166,21 @@ exports.pdfService = {
         let curY = 36;
 
         // Logo
-        const logoW = 130;
+        const logoW = 110;  // matches PhonePe reference logo proportions
         const logoH = logoW * LOGO_ASPECT;
         doc.image(Buffer.from(LOGO_BASE64, 'base64'), BX, curY, { width: logoW });
 
         // Company name + address (right-aligned, no border)
-        const addrX = BX + logoW + 10;
-        const addrW = BW - logoW - 10;
+        const addrX = BX + logoW + 5;
+        const addrW = BW - logoW - 5;
         doc.font('Helvetica-Bold').fontSize(10).fillColor('#111111')
             .text(orgName, addrX, curY, { width: addrW, align: 'right' });
         let addrY = curY + doc.currentLineHeight(true) + 1;
-        doc.font('Helvetica').fontSize(8).fillColor('#444444');
-        for (const line of orgAddress) {
-            doc.text(line, addrX, addrY, { width: addrW, align: 'right' });
+        doc.font('Helvetica').fontSize(8);
+        for (let ai = 0; ai < orgAddress.length; ai++) {
+            const isLastLine = ai === orgAddress.length - 1;
+            doc.fillColor(isLastLine ? '#3355bb' : '#444444');
+            doc.text(orgAddress[ai], addrX, addrY, { width: addrW, align: 'right' });
             addrY += doc.currentLineHeight(true) + 1;
         }
 
@@ -189,22 +192,27 @@ exports.pdfService = {
         const boxTop = curY;
 
         // ── 10. TITLE BAR ─────────────────────────────────────────────────────────
-        const RH_TITLE = 22;
-        // Light blue fill (reference colour — periwinkle/steel blue)
-        doc.save().rect(BX, curY, BW, RH_TITLE).fill('#c8dff5').restore();
-        // Centered bold dark text
-        doc.font('Helvetica-Bold').fontSize(11).fillColor('#1a3c6e');
+        const RH_TITLE = 23.8;   // ref title bar 27px * 0.8805
+        // Reference title bar background is plain WHITE (no fill)
+        // Centered bold blue text
+        doc.font('Helvetica-Bold').fontSize(11).fillColor('#3355bb');
         const titleH = doc.currentLineHeight(true);
         doc.text(`Pay Slip for ${periodLabel}`, BX, curY + (RH_TITLE - titleH) / 2,
             { width: BW, align: 'center', lineBreak: false });
         curY += RH_TITLE;
+        hline(curY);   // ref row 124: horizontal rule between title bar and employee grid
 
         // ── 11. EMPLOYEE INFO ─────────────────────────────────────────────────────
-        // Layout: 4 columns — [label | value] [label | value]
-        // label cols ~90pt, value cols fill remaining half
-        const halfW = BW / 2;         // 261.64
-        const lblW = 90;
-        const valW = halfW - lblW;   // 171.64
+        // Geometry measured PIXEL-FOR-PIXEL from the PhonePe reference image.
+        // Ref box border-to-border = 642px mapped to BW(565.28) -> scale 0.88050 pt/px.
+        // Internal vertical dividers at ref cols 118, 434, 524 ; row height ref 19.17px.
+        const EMP_valL = BX + 62.52;    // ref col 118  (left  label|value divider)
+        const EMP_ctr = BX + 340.75;   // ref col 434  (centre divider)
+        const EMP_valR = BX + 420.00;   // ref col 524  (right label|value divider)
+        const wLblL = EMP_valL - BX;        // 62.52  left  label col
+        const wValL = EMP_ctr - EMP_valL;  // 278.23 left  value col
+        const wLblR = EMP_valR - EMP_ctr;   // 79.25  right label col
+        const wValR = (BX + BW) - EMP_valR;  // 145.28 right value col
 
         const empRows = [
             ['Emp. Code', empCode, 'PAN', pan],
@@ -214,81 +222,70 @@ exports.pdfService = {
             ['Bank A/C No.', bankAcc, 'PF Number', pfNum],
             ['IFSC', ifsc, 'Payable Days', String(payDays)],
         ];
-        const RH_EMP = 17;
+        const RH_EMP = 16.88;           // ref 19.17px * 0.8805
         const empTop = curY;
 
-        // Write all text first (no fills, no borders yet)
+        // Write all text first (no fills, no borders yet) — padding measured from ref
         for (let i = 0; i < empRows.length; i++) {
             const [l1, v1, l2, v2] = empRows[i];
             const ry = curY + i * RH_EMP;
             const textY = ry + (RH_EMP - 8.5) / 2;  // vertically centre 8.5pt text in row
 
-            txt(l1, BX, textY, lblW, { font: 'Helvetica-Bold', size: 8.5 });
-            txt(v1, BX + lblW, textY, valW, { font: (l1 === 'Emp. Name' || l1 === 'Emp. Code') ? 'Helvetica-Bold' : 'Helvetica', size: 8.5 });
-            txt(l2, BX + halfW, textY, lblW, { font: 'Helvetica-Bold', size: 8.5 });
-            txt(v2, BX + halfW + lblW, textY, valW, { font: 'Helvetica', size: 8.5 });
+            const boldLabel = (l1 === 'Emp. Code' || l1 === 'Emp. Name');
+            txt(l1, BX, textY, wLblL, { font: boldLabel ? 'Helvetica-Bold' : 'Helvetica', size: 8.5, paddingL: 2.6 });
+            txt(v1, EMP_valL, textY, wValL, { font: boldLabel ? 'Helvetica-Bold' : 'Helvetica', size: 8.5, paddingL: 2.6 });
+            txt(l2, EMP_ctr, textY, wLblR, { font: 'Helvetica', size: 8.5, paddingL: 7.0 });
+            txt(v2, EMP_valR, textY, wValR, { font: 'Helvetica', size: 8.5, paddingL: 2.6 });
         }
         curY += empRows.length * RH_EMP;
         const empBottom = curY;
 
-        // Draw employee section lines (horizontal between rows + one vertical)
-        for (let i = 1; i < empRows.length; i++) hline(empTop + i * RH_EMP);
-        vline(BX + halfW, empTop, empBottom);  // centre vertical divider only
+        // Vertical dividers (measured): left label|value, centre, right label|value
+        vline(EMP_valL, empTop, empBottom);
+        vline(EMP_ctr, empTop, empBottom);
+        vline(EMP_valR, empTop, empBottom);
 
         // ── 12. EARNINGS / DEDUCTIONS ─────────────────────────────────────────────
-        // Separator line between employee section and E/D section
-        hline(curY);
+        // All geometry measured PIXEL-FOR-PIXEL from the PhonePe lower-half reference.
+        // Ref box border-to-border = 650px mapped to BW(565.28) -> scale 0.86966 pt/px.
+        // BLUE separator (ref rows 24-25, colour rgb 28,21,191) between employee & header.
+        hline(curY, '#1c15bf', 1.2);
 
-        // Column widths (6 cols, must sum to BW=523.28)
-        // Reference proportions: earnings label wider, amount cols narrower
-        const C = [
-            BW * 0.245,   // Earnings label   ~128.2
-            BW * 0.120,   // Cur Month earn   ~62.8
-            BW * 0.115,   // YTD earn         ~60.2
-            BW * 0.240,   // Deductions label ~125.6
-            BW * 0.135,   // Cur Month dedu   ~70.6
-            BW * 0.140,   // YTD dedu         ~73.3
-        ];
-        // Normalise
+        // Column widths measured from reference dividers (cols 207/279/356/532/604).
+        // Perfectly symmetric halves: [label 153.06 | CM 62.62 | YTD 66.96] x 2
+        const C = [153.06, 62.62, 66.96, 153.06, 62.62, 66.97];
         const cSum = C.reduce((a, b) => a + b, 0);
-        for (let i = 0; i < C.length; i++) C[i] = C[i] * BW / cSum;
-        // X positions
+        for (let i = 0; i < C.length; i++) C[i] = C[i] * BW / cSum;   // normalise to fill BW exactly
         const CX = [];
         let cx = BX; for (const w of C) { CX.push(cx); cx += w; }
 
-        // E/D header row
-        const RH_HDR = 22;
+        // E/D header row — WHITE background (no fill), ref height 28px*0.8697
+        const RH_HDR = 24.4;
         const edHdrTop = curY;
 
-        // E/D header — light fill for entire row (matches reference)
-        doc.save().rect(BX, edHdrTop, BW, RH_HDR).fill('#f0f4f8').restore();
-        // Red left accent on Earnings header (reference detail: solid red bar 3pt wide)
-        doc.save().rect(BX, edHdrTop, 3, RH_HDR).fill('#cc0000').restore();
-
-        // Header text — all cells center-aligned, vertically centred
-        // Single-line (8pt): centre at edHdrTop + (RH_HDR-8)/2
-        // Two-line (7.5pt × 2 + 2pt gap = 17pt): top at edHdrTop + (RH_HDR-17)/2
-        const hdr1Y = edHdrTop + (RH_HDR - 8) / 2;      // single-line vertical centre
-        const hdr2Y = edHdrTop + (RH_HDR - 17) / 2;     // two-line block top
-        txt('Earnings', CX[0], hdr1Y, C[0], { font: 'Helvetica-Bold', size: 8, align: 'center', paddingL: 0 });
-        txt('Current Month', CX[1], hdr1Y, C[1], { font: 'Helvetica-Bold', size: 7.5, align: 'center', paddingL: 0 });
+        // Header text — black, centre-aligned, vertically centred (single + two-line)
+        const hdr1Y = edHdrTop + (RH_HDR - 9) / 2;       // single-line vertical centre
+        const hdr2Y = edHdrTop + (RH_HDR - 16.5) / 2;    // two-line block top
+        txt('Earnings', CX[0], hdr1Y, C[0], { font: 'Helvetica-Bold', size: 9, align: 'center', paddingL: 0 });
+        txt('Current Month', CX[1], hdr1Y + 0.5, C[1], { font: 'Helvetica-Bold', size: 7.5, align: 'center', paddingL: 0 });
         txt('Year To Date', CX[2], hdr2Y, C[2], { font: 'Helvetica-Bold', size: 7.5, align: 'center', paddingL: 0 });
-        txt('Earnings', CX[2], hdr2Y + 9, C[2], { font: 'Helvetica-Bold', size: 7.5, align: 'center', paddingL: 0 });
-        txt('Deductions', CX[3], hdr1Y, C[3], { font: 'Helvetica-Bold', size: 8, align: 'center', paddingL: 0 });
-        txt('Current Month', CX[4], hdr1Y, C[4], { font: 'Helvetica-Bold', size: 7.5, align: 'center', paddingL: 0 });
+        txt('Earnings', CX[2], hdr2Y + 8.5, C[2], { font: 'Helvetica-Bold', size: 7.5, align: 'center', paddingL: 0 });
+        txt('Deductions', CX[3], hdr1Y, C[3], { font: 'Helvetica-Bold', size: 9, align: 'center', paddingL: 0 });
+        txt('Current Month', CX[4], hdr1Y + 0.5, C[4], { font: 'Helvetica-Bold', size: 7.5, align: 'center', paddingL: 0 });
         txt('Year To Date', CX[5], hdr2Y, C[5], { font: 'Helvetica-Bold', size: 7.5, align: 'center', paddingL: 0 });
-        txt('Deductions', CX[5], hdr2Y + 9, C[5], { font: 'Helvetica-Bold', size: 7.5, align: 'center', paddingL: 0 });
+        txt('Deductions', CX[5], hdr2Y + 8.5, C[5], { font: 'Helvetica-Bold', size: 7.5, align: 'center', paddingL: 0 });
 
         curY += RH_HDR;
-        hline(curY);
+        // RED separator (ref rows 53-54, colour rgb 253,0,0) between header & data
+        hline(curY, '#fd0000', 1.2);
 
-        // Draw vertical dividers for header
+        // Vertical dividers for header
         for (let c = 1; c < 6; c++) vline(CX[c], edHdrTop, curY);
 
-        // E/D data rows
-        const RH_DATA = 14;
-        // Reserve at LEAST 12 rows of space (matches reference open whitespace)
-        const MIN_ROWS = 12;
+        // E/D data rows — ref row height 14px*0.8697 = 12.17pt
+        const RH_DATA = 12.17;
+        // Reference reserves a FIXED 29-row data region (open whitespace to Total row)
+        const MIN_ROWS = 29;
         const dataRows = Math.max(earningDefs.length, deductDefs.length, MIN_ROWS);
         const edDataTop = curY;
 
@@ -299,67 +296,66 @@ exports.pdfService = {
             const ty = ry + (RH_DATA - 8.5) / 2;
 
             if (e) {
-                txt(e.label, CX[0], ty, C[0], { size: 8.5 });
-                txt(fmt(e.cur), CX[1], ty, C[1], { size: 8.5, align: 'right' });
-                txt(fmt(e.ytd), CX[2], ty, C[2], { size: 8.5, align: 'right' });
+                txt(e.label, CX[0], ty, C[0], { size: 8.5, paddingL: 2.6 });
+                txt(fmt(e.cur), CX[1], ty, C[1], { size: 8.5, align: 'right', paddingL: 3.5 });
+                txt(fmt(e.ytd), CX[2], ty, C[2], { size: 8.5, align: 'right', paddingL: 3.5 });
             }
             if (d) {
-                txt(d.label, CX[3], ty, C[3], { size: 8.5, paddingL: 5 });
-                txt(fmt(d.cur), CX[4], ty, C[4], { size: 8.5, align: 'right' });
-                txt(fmt(d.ytd), CX[5], ty, C[5], { size: 8.5, align: 'right' });
+                txt(d.label, CX[3], ty, C[3], { size: 8.5, paddingL: 2.6 });
+                txt(fmt(d.cur), CX[4], ty, C[4], { size: 8.5, align: 'right', paddingL: 3.5 });
+                txt(fmt(d.ytd), CX[5], ty, C[5], { size: 8.5, align: 'right', paddingL: 3.5 });
             }
         }
 
-        // Draw vertical dividers for data area (full height of data rows)
+        // Vertical dividers for data area (full height)
         const edDataBottom = edDataTop + dataRows * RH_DATA;
         for (let c = 1; c < 6; c++) vline(CX[c], edDataTop, edDataBottom);
         curY = edDataBottom;
 
         // ── 13. TOTAL ROW ─────────────────────────────────────────────────────────
-        hline(curY);
-        const RH_TOTAL = 17;
+        hline(curY);                        // black, ref row 460
+        const RH_TOTAL = 13;                // ref 15px*0.8697
         const totTop = curY;
         const totTextY = curY + (RH_TOTAL - 8.5) / 2;
 
-        txt('Total', CX[0], totTextY, C[0], { font: 'Helvetica-Bold', size: 8.5, align: 'right', paddingL: 0 });
-        txt(fmt(totEarnCur), CX[1], totTextY, C[1], { font: 'Helvetica-Bold', size: 8.5, align: 'right' });
-        txt(fmt(totEarnYtd), CX[2], totTextY, C[2], { font: 'Helvetica-Bold', size: 8.5, align: 'right' });
-        txt(fmt(totDeduCur), CX[4], totTextY, C[4], { font: 'Helvetica-Bold', size: 8.5, align: 'right' });
-        txt(fmt(totDeduYtd), CX[5], totTextY, C[5], { font: 'Helvetica-Bold', size: 8.5, align: 'right' });
+        txt('Total', CX[0], totTextY, C[0], { font: 'Helvetica-Bold', size: 8.5, align: 'right', paddingL: 3.5 });
+        txt(fmt(totEarnCur), CX[1], totTextY, C[1], { font: 'Helvetica-Bold', size: 8.5, align: 'right', paddingL: 3.5 });
+        txt(fmt(totEarnYtd), CX[2], totTextY, C[2], { font: 'Helvetica-Bold', size: 8.5, align: 'right', paddingL: 3.5 });
+        txt(fmt(totDeduCur), CX[4], totTextY, C[4], { font: 'Helvetica-Bold', size: 8.5, align: 'right', paddingL: 3.5 });
+        txt(fmt(totDeduYtd), CX[5], totTextY, C[5], { font: 'Helvetica-Bold', size: 8.5, align: 'right', paddingL: 3.5 });
 
-        // Vertical dividers for total row
+        // Vertical dividers for total row (stop at net pay top; net pay has none)
         for (let c = 1; c < 6; c++) vline(CX[c], totTop, totTop + RH_TOTAL);
         curY += RH_TOTAL;
 
         // ── 14. NET PAY ROW ───────────────────────────────────────────────────────
-        hline(curY);
-        const RH_NP = 22;
+        hline(curY);                        // black, ref row 475 (total bottom / net pay top)
+        const RH_NP = 21;                   // ref 24px*0.8697
         const npTop = curY;
 
-        // "Net Pay : Rs." small bold + large bold amount side by side, then words
+        // "Net Pay : Rs." bold label (ref start PDFx ~21) + bold amount; words italic
         doc.save();
-        doc.font('Helvetica-Bold').fontSize(9).fillColor('#111111');
+        doc.font('Helvetica-Bold').fontSize(10.5).fillColor('#111111');
         const npLabel = 'Net Pay : Rs.';
         const npLabelW = doc.widthOfString(npLabel);
         const npLabelH = doc.currentLineHeight(true);
-        const npLabelY = npTop + (RH_NP - npLabelH) / 2;
-        doc.text(npLabel, BX + 8, npLabelY, { lineBreak: false });
+        doc.text(npLabel, BX + 6, npTop + (RH_NP - npLabelH) / 2, { lineBreak: false });
 
-        doc.font('Helvetica-Bold').fontSize(15).fillColor('#111111');
+        doc.font('Helvetica-Bold').fontSize(12).fillColor('#111111');
         const npAmtH = doc.currentLineHeight(true);
-        const npAmtY = npTop + (RH_NP - npAmtH) / 2;
-        doc.text(fmt(netPay), BX + 8 + npLabelW + 5, npAmtY, { lineBreak: false });
+        doc.text(fmt(netPay), BX + 6 + npLabelW + 8, npTop + (RH_NP - npAmtH) / 2, { lineBreak: false });
         doc.restore();
 
-        // Words — right portion
+        // Amount in words — italic, fixed position (ref start PDFx 177.6), "Rupees ... Only."
         if (netPayWords) {
-            const words = netPayWords.endsWith('.') ? netPayWords : `${netPayWords}.`;
+            let words = netPayWords.trim();
+            if (!/^rupees/i.test(words)) words = `Rupees ${words}`;
+            if (!words.endsWith('.')) words = `${words}.`;
             doc.save();
-            const npWordsX = BX + BW * 0.40;
-            const npWordsW = BW * 0.60 - 8;
-            doc.font('Helvetica').fontSize(9).fillColor('#111111');
+            const npWordsX = BX + 162.6;
+            doc.font('Helvetica-Oblique').fontSize(9).fillColor('#111111');
             const wH = doc.currentLineHeight(true);
-            doc.text(words, npWordsX, npTop + (RH_NP - wH) / 2, { width: npWordsW, align: 'left', lineBreak: false });
+            doc.text(words, npWordsX, npTop + (RH_NP - wH) / 2, { width: (BX + BW) - npWordsX - 4, align: 'left', lineBreak: false });
             doc.restore();
         }
 
@@ -369,10 +365,11 @@ exports.pdfService = {
         outerBox(boxTop, curY);
 
         // ── 16. FOOTER ────────────────────────────────────────────────────────────
-        curY += 8;
-        doc.font('Helvetica-Oblique').fontSize(7.5).fillColor('#2244aa')
+        // Ref: black italic, ~7.5pt, 4.3pt below net pay, left-aligned at ~BX+8
+        curY += 4.3;
+        doc.font('Helvetica-Oblique').fontSize(7.5).fillColor('#111111')
             .text('This is a system generated report, hence signature not required.',
-                BX + 4, curY, { width: BW, align: 'left' });
+                BX + 8, curY, { width: BW, align: 'left' });
 
         // ── 17. Finalise ──────────────────────────────────────────────────────────
         doc.end();
