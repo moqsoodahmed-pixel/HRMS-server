@@ -209,12 +209,18 @@ router.get('/audit/:id', authenticate, authorize(...AUDIT), nc.getAuditLog);
 // ─── Assets ──────────────────────────────────────────────────────────────────
 router.get('/assets', authenticate, requireOnboardingApproved(), assc.getAssets);
 router.get('/assets/stats', authenticate, assc.getAssetStats);
+router.get('/assets/export', authenticate, authorize(...HR), assc.bulkExport);
 router.post('/assets', authenticate, authorize(...HR), assc.createAsset);
 router.get('/assets/:id', authenticate, requireOnboardingApproved(), assc.getAsset);
 router.patch('/assets/:id', authenticate, authorize(...HR), assc.updateAsset);
 router.post('/assets/:id/assign', authenticate, authorize(...HR), assc.assignAsset);
 router.post('/assets/:id/return', authenticate, authorize(...HR), assc.returnAsset);
 router.get('/assets/:id/history', authenticate, requireOnboardingApproved(), assc.getAssetHistory);
+router.get('/assets/:id/qr', authenticate, requireOnboardingApproved(), assc.getAssetQR);
+router.get('/assets/:id/timeline', authenticate, requireOnboardingApproved(), assc.getAssetTimeline);
+router.patch('/assets/:id/warranty', authenticate, authorize(...HR), assc.updateWarranty);
+router.post('/assets/:id/lost', authenticate, authorize(...HR), assc.markAssetLost);
+router.post('/assets/:id/transfer', authenticate, authorize(...HR), assc.transferAsset);
 
 // ─── Onboarding ──────────────────────────────────────────────────────────────
 router.get('/onboarding', authenticate, tc.getTaskOverview('onboarding'));

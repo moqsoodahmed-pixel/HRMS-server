@@ -16,6 +16,23 @@ const roles_1 = require("../utils/roles");
 
 /** Roles allowed to see payroll figures for people other than themselves. */
 const PAYROLL_VIEW_ROLES = roles_1.PAYROLL_VIEW_ROLES;
+
+function numberToWords(amount) {
+    const ones = ['', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine',
+        'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen', 'Seventeen', 'Eighteen', 'Nineteen'];
+    const tens = ['', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'];
+    if (amount === 0) return 'Zero';
+    const convert = (n) => {
+        if (n < 20) return ones[n];
+        if (n < 100) return tens[Math.floor(n / 10)] + (n % 10 ? ' ' + ones[n % 10] : '');
+        if (n < 1000) return ones[Math.floor(n / 100)] + ' Hundred' + (n % 100 ? ' ' + convert(n % 100) : '');
+        if (n < 100000) return convert(Math.floor(n / 1000)) + ' Thousand' + (n % 1000 ? ' ' + convert(n % 1000) : '');
+        if (n < 10000000) return convert(Math.floor(n / 100000)) + ' Lakh' + (n % 100000 ? ' ' + convert(n % 100000) : '');
+        return convert(Math.floor(n / 10000000)) + ' Crore' + (n % 10000000 ? ' ' + convert(n % 10000000) : '');
+    };
+    const intPart = Math.floor(Math.abs(amount));
+    return 'Rupees ' + convert(intPart) + ' Only';
+}
 exports.PAYROLL_VIEW_ROLES = PAYROLL_VIEW_ROLES;
 
 const money = zod_1.z.coerce.number().min(0, 'Must be zero or more').max(100000000);
@@ -227,26 +244,123 @@ async function buildPayslip(req, employeeId, month, year) {
     const payPeriodStart = new Date(year, month - 1, 1);
     const payPeriodEnd = new Date(year, month, 0);
     const workingDays = payPeriodEnd.getDate();
-    const totalEarnings = structure.basic + structure.hra + structure.da + structure.specialAllowance + structure.otherAllowances;
-    const totalDeductions = structure.pf + structure.esi + structure.tds + structure.otherDeductions;
+
+    const totalEarnings = (structure.basic || 0) + (structure.hra || 0) + (structure.da || 0) +
+        (structure.specialAllowance || 0) + (structure.otherAllowances || 0) +
+        (structure.bonus || 0) + (structure.performancePay || 0) + (structure.incentives || 0) +
+        (structure.travelAllowance || 0) + (structure.medicalAllowance || 0) + (structure.foodAllowance || 0) +
+        (structure.communicationAllowance || 0) + (structure.shiftAllowance || 0) +
+        (structure.overtime || 0) + (structure.leaveEncashment || 0) + (structure.arrears || 0);
+
+    const totalDeductions = (structure.pf || 0) + (structure.esi || 0) + (structure.tds || 0) +
+        (structure.otherDeductions || 0) + (structure.professionalTax || 0) +
+        (structure.advance || 0) + (structure.loan || 0) + (structure.insurance || 0) +
+        (structure.labourWelfareFund || 0);
+
+    const netSalary = totalEarnings - totalDeductions;
+
+    // Generate payroll ID
+    const empCode = employee.employeeCode || employee._id.toString().slice(-6).toUpperCase();
+    const payrollId = `DL-PAY-${year}-${String(month).padStart(2, '0')}-${empCode}`;
+
+    // Compute YTD: sum all GENERATED/PAID payslips for this employee in the same fiscal year.
+    // Indian fiscal year: April (month 4) of year to March (month 3) of year+1.
+    const fiscalYearStart = month >= 4 ? { year, month: 4 } : { year: year - 1, month: 4 };
+    const ytdPayslips = await Payroll_1.Payslip.find({
+        employee: employeeId,
+        status: { $in: ['GENERATED', 'PAID'] },
+        $or: [
+            { year: fiscalYearStart.year, month: { $gte: fiscalYearStart.month } },
+            { year: { $gt: fiscalYearStart.year }, month: { $lte: 3 } },
+        ],
+    }).lean();
+
+    const ytdSum = (field) => ytdPayslips.reduce((acc, p) => acc + (p[field] || 0), 0);
+
+    // Bank and identity fields from employee
+    const bank = employee?.onboardingData?.bank || {};
+    const identity = employee?.onboardingData?.identity || {};
 
     const payslip = await Payroll_1.Payslip.create({
         employee: employeeId,
         salaryStructure: structure._id,
         month, year, payPeriodStart, payPeriodEnd,
-        basic: structure.basic,
-        hra: structure.hra,
-        da: structure.da,
-        specialAllowance: structure.specialAllowance,
-        otherAllowances: structure.otherAllowances,
+        payrollId,
+        // Identity / bank from employee record
+        uan: employee.uan || identity.uan || '',
+        pfNumber: employee.pfNumber || identity.pfNumber || '',
+        esicNumber: employee.esicNumber || identity.esicNumber || '',
+        panNumber: employee.panNumber || identity.panNumber || '',
+        bankName: bank.bankName || '',
+        accountNumber: bank.accountNumber || '',
+        ifscCode: bank.ifscCode || '',
+        aadharNumber: employee.aadharNumber ? String(employee.aadharNumber).replace(/\d(?=\d{4})/g, '*') : '',
+        managerName: employee.managerName || '',
+        totalWorkingDays: workingDays,
+        // Earnings
+        basic: structure.basic || 0,
+        hra: structure.hra || 0,
+        da: structure.da || 0,
+        specialAllowance: structure.specialAllowance || 0,
+        otherAllowances: structure.otherAllowances || 0,
+        bonus: structure.bonus || 0,
+        performancePay: structure.performancePay || 0,
+        incentives: structure.incentives || 0,
+        travelAllowance: structure.travelAllowance || 0,
+        medicalAllowance: structure.medicalAllowance || 0,
+        foodAllowance: structure.foodAllowance || 0,
+        communicationAllowance: structure.communicationAllowance || 0,
+        shiftAllowance: structure.shiftAllowance || 0,
+        overtime: structure.overtime || 0,
+        leaveEncashment: structure.leaveEncashment || 0,
+        arrears: structure.arrears || 0,
         totalEarnings,
-        pf: structure.pf,
-        esi: structure.esi,
-        tds: structure.tds,
-        otherDeductions: structure.otherDeductions,
+        // Deductions
+        pf: structure.pf || 0,
+        esi: structure.esi || 0,
+        tds: structure.tds || 0,
+        otherDeductions: structure.otherDeductions || 0,
+        professionalTax: structure.professionalTax || 0,
+        advance: structure.advance || 0,
+        loan: structure.loan || 0,
+        insurance: structure.insurance || 0,
+        labourWelfareFund: structure.labourWelfareFund || 0,
+        otherDeductionsLabel: structure.otherDeductionsLabel || '',
+        employerPfContribution: structure.employerPf || 0,
+        employerEsiContribution: structure.employerEsi || 0,
         totalDeductions,
         grossSalary: totalEarnings,
-        netSalary: totalEarnings - totalDeductions,
+        netSalary,
+        netPayInWords: numberToWords(Math.round(netSalary)),
+        // YTD
+        ytd_basic: ytdSum('basic') + (structure.basic || 0),
+        ytd_hra: ytdSum('hra') + (structure.hra || 0),
+        ytd_da: ytdSum('da') + (structure.da || 0),
+        ytd_specialAllowance: ytdSum('specialAllowance') + (structure.specialAllowance || 0),
+        ytd_otherAllowances: ytdSum('otherAllowances') + (structure.otherAllowances || 0),
+        ytd_bonus: ytdSum('bonus') + (structure.bonus || 0),
+        ytd_performancePay: ytdSum('performancePay') + (structure.performancePay || 0),
+        ytd_incentives: ytdSum('incentives') + (structure.incentives || 0),
+        ytd_travelAllowance: ytdSum('travelAllowance') + (structure.travelAllowance || 0),
+        ytd_medicalAllowance: ytdSum('medicalAllowance') + (structure.medicalAllowance || 0),
+        ytd_foodAllowance: ytdSum('foodAllowance') + (structure.foodAllowance || 0),
+        ytd_communicationAllowance: ytdSum('communicationAllowance') + (structure.communicationAllowance || 0),
+        ytd_shiftAllowance: ytdSum('shiftAllowance') + (structure.shiftAllowance || 0),
+        ytd_overtime: ytdSum('overtime') + (structure.overtime || 0),
+        ytd_leaveEncashment: ytdSum('leaveEncashment') + (structure.leaveEncashment || 0),
+        ytd_arrears: ytdSum('arrears') + (structure.arrears || 0),
+        ytd_totalEarnings: ytdSum('totalEarnings') + totalEarnings,
+        ytd_pf: ytdSum('pf') + (structure.pf || 0),
+        ytd_esi: ytdSum('esi') + (structure.esi || 0),
+        ytd_tds: ytdSum('tds') + (structure.tds || 0),
+        ytd_professionalTax: ytdSum('professionalTax') + (structure.professionalTax || 0),
+        ytd_advance: ytdSum('advance') + (structure.advance || 0),
+        ytd_loan: ytdSum('loan') + (structure.loan || 0),
+        ytd_insurance: ytdSum('insurance') + (structure.insurance || 0),
+        ytd_labourWelfareFund: ytdSum('labourWelfareFund') + (structure.labourWelfareFund || 0),
+        ytd_otherDeductions: ytdSum('otherDeductions') + (structure.otherDeductions || 0),
+        ytd_totalDeductions: ytdSum('totalDeductions') + totalDeductions,
+        ytd_netSalary: ytdSum('netSalary') + netSalary,
         workingDays,
         paidDays: workingDays,
         lop: 0,

@@ -1,22 +1,22 @@
 "use strict";
-var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function (o, m, k, k2) {
     if (k2 === undefined) k2 = k;
     var desc = Object.getOwnPropertyDescriptor(m, k);
     if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
-      desc = { enumerable: true, get: function() { return m[k]; } };
+        desc = { enumerable: true, get: function () { return m[k]; } };
     }
     Object.defineProperty(o, k2, desc);
-}) : (function(o, m, k, k2) {
+}) : (function (o, m, k, k2) {
     if (k2 === undefined) k2 = k;
     o[k2] = m[k];
 }));
-var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function (o, v) {
     Object.defineProperty(o, "default", { enumerable: true, value: v });
-}) : function(o, v) {
+}) : function (o, v) {
     o["default"] = v;
 });
 var __importStar = (this && this.__importStar) || (function () {
-    var ownKeys = function(o) {
+    var ownKeys = function (o) {
         ownKeys = Object.getOwnPropertyNames || function (o) {
             var ar = [];
             for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
@@ -44,10 +44,31 @@ const salaryStructureSchema = new mongoose_1.Schema({
     da: { type: Number, default: 0 },
     specialAllowance: { type: Number, default: 0 },
     otherAllowances: { type: Number, default: 0 },
+    // Extended earnings
+    bonus: { type: Number, default: 0 },
+    performancePay: { type: Number, default: 0 },
+    incentives: { type: Number, default: 0 },
+    travelAllowance: { type: Number, default: 0 },
+    medicalAllowance: { type: Number, default: 0 },
+    foodAllowance: { type: Number, default: 0 },
+    communicationAllowance: { type: Number, default: 0 },
+    shiftAllowance: { type: Number, default: 0 },
+    overtime: { type: Number, default: 0 },
+    leaveEncashment: { type: Number, default: 0 },
+    arrears: { type: Number, default: 0 },
+    // Deductions
     pf: { type: Number, default: 0 },
     esi: { type: Number, default: 0 },
     tds: { type: Number, default: 0 },
     otherDeductions: { type: Number, default: 0 },
+    professionalTax: { type: Number, default: 0 },
+    advance: { type: Number, default: 0 },
+    loan: { type: Number, default: 0 },
+    insurance: { type: Number, default: 0 },
+    labourWelfareFund: { type: Number, default: 0 },
+    otherDeductionsLabel: { type: String },
+    employerPf: { type: Number, default: 0 },
+    employerEsi: { type: Number, default: 0 },
     grossSalary: { type: Number, default: 0 },
     netSalary: { type: Number, default: 0 },
     isActive: { type: Boolean, default: true },
@@ -60,19 +81,82 @@ const payslipSchema = new mongoose_1.Schema({
     year: { type: Number, required: true },
     payPeriodStart: { type: Date, required: true },
     payPeriodEnd: { type: Date, required: true },
+    // Identity / reference
+    payrollId: { type: String },
+    uan: { type: String },
+    pfNumber: { type: String },
+    esicNumber: { type: String },
+    panNumber: { type: String },
+    bankName: { type: String },
+    accountNumber: { type: String },
+    ifscCode: { type: String },
+    aadharNumber: { type: String },
+    managerName: { type: String },
+    totalWorkingDays: { type: Number, default: 0 },
+    // Earnings
     basic: { type: Number, default: 0 },
     hra: { type: Number, default: 0 },
     da: { type: Number, default: 0 },
     specialAllowance: { type: Number, default: 0 },
     otherAllowances: { type: Number, default: 0 },
+    bonus: { type: Number, default: 0 },
+    performancePay: { type: Number, default: 0 },
+    incentives: { type: Number, default: 0 },
+    travelAllowance: { type: Number, default: 0 },
+    medicalAllowance: { type: Number, default: 0 },
+    foodAllowance: { type: Number, default: 0 },
+    communicationAllowance: { type: Number, default: 0 },
+    shiftAllowance: { type: Number, default: 0 },
+    overtime: { type: Number, default: 0 },
+    leaveEncashment: { type: Number, default: 0 },
+    arrears: { type: Number, default: 0 },
     totalEarnings: { type: Number, default: 0 },
+    // Deductions
     pf: { type: Number, default: 0 },
     esi: { type: Number, default: 0 },
     tds: { type: Number, default: 0 },
     otherDeductions: { type: Number, default: 0 },
+    professionalTax: { type: Number, default: 0 },
+    advance: { type: Number, default: 0 },
+    loan: { type: Number, default: 0 },
+    insurance: { type: Number, default: 0 },
+    labourWelfareFund: { type: Number, default: 0 },
+    otherDeductionsLabel: { type: String },
+    employerPfContribution: { type: Number, default: 0 },
+    employerEsiContribution: { type: Number, default: 0 },
     totalDeductions: { type: Number, default: 0 },
     grossSalary: { type: Number, default: 0 },
     netSalary: { type: Number, default: 0 },
+    netPayInWords: { type: String },
+    // YTD amounts
+    ytd_basic: { type: Number, default: 0 },
+    ytd_hra: { type: Number, default: 0 },
+    ytd_da: { type: Number, default: 0 },
+    ytd_specialAllowance: { type: Number, default: 0 },
+    ytd_otherAllowances: { type: Number, default: 0 },
+    ytd_bonus: { type: Number, default: 0 },
+    ytd_performancePay: { type: Number, default: 0 },
+    ytd_incentives: { type: Number, default: 0 },
+    ytd_travelAllowance: { type: Number, default: 0 },
+    ytd_medicalAllowance: { type: Number, default: 0 },
+    ytd_foodAllowance: { type: Number, default: 0 },
+    ytd_communicationAllowance: { type: Number, default: 0 },
+    ytd_shiftAllowance: { type: Number, default: 0 },
+    ytd_overtime: { type: Number, default: 0 },
+    ytd_leaveEncashment: { type: Number, default: 0 },
+    ytd_arrears: { type: Number, default: 0 },
+    ytd_totalEarnings: { type: Number, default: 0 },
+    ytd_pf: { type: Number, default: 0 },
+    ytd_esi: { type: Number, default: 0 },
+    ytd_tds: { type: Number, default: 0 },
+    ytd_professionalTax: { type: Number, default: 0 },
+    ytd_advance: { type: Number, default: 0 },
+    ytd_loan: { type: Number, default: 0 },
+    ytd_insurance: { type: Number, default: 0 },
+    ytd_labourWelfareFund: { type: Number, default: 0 },
+    ytd_otherDeductions: { type: Number, default: 0 },
+    ytd_totalDeductions: { type: Number, default: 0 },
+    ytd_netSalary: { type: Number, default: 0 },
     workingDays: { type: Number, default: 0 },
     paidDays: { type: Number, default: 0 },
     lop: { type: Number, default: 0 },
