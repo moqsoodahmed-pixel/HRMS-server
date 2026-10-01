@@ -35,6 +35,17 @@ async function generateAssetCode(company, category) {
     return `${prefix}-${num}`;
 }
 
+// Keep the two equivalent category fields (assetCategory / type) and the AMC
+// flag (amc / hasAMC) in sync BEFORE validation, so a client that sends only one
+// of each still passes. This only fills missing values — it removes no validation.
+function normalizeAssetBody(body) {
+    if (!body || typeof body !== 'object') return body;
+    if (!body.assetCategory && body.type) body.assetCategory = body.type;
+    if (!body.type && body.assetCategory) body.type = body.assetCategory;
+    if (body.amc === undefined && typeof body.hasAMC === 'boolean') body.amc = body.hasAMC;
+    return body;
+}
+
 const assetSchema = zod_1.z.object({
     name: zod_1.z.string().min(1, 'Asset name is required').max(120),
     company: zod_1.z.enum(['DutyLaunch', 'LauncherDesk']),
@@ -175,7 +186,7 @@ exports.getAsset = getAsset;
 // ─── createAsset ──────────────────────────────────────────────────────────────
 const createAsset = async (req, res, next) => {
     try {
-        const data = assetSchema.parse(req.body);
+        const data = assetSchema.parse(normalizeAssetBody(req.body));
         const assetCode = await generateAssetCode(data.company, data.assetCategory);
         const payload = cleanPayload(data);
         const asset = await AssetOnboarding_1.Asset.create({ ...payload, assetCode, createdBy: req.user?.userId });
@@ -201,7 +212,7 @@ const updateAsset = async (req, res, next) => {
     try {
         const { id } = req.params;
         (0, helpers_1.assertObjectId)(id, 'asset id');
-        const data = assetSchema.partial().parse(req.body);
+        const data = assetSchema.partial().parse(normalizeAssetBody(req.body));
         const asset = await AssetOnboarding_1.Asset.findById(id);
         if (!asset) throw new errorHandler_1.AppError('Asset not found', 404, 'NOT_FOUND');
         if (data.status && asset.status === 'ASSIGNED' && data.status !== 'ASSIGNED') {
