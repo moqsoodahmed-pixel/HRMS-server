@@ -21,10 +21,32 @@ app.use(helmet({
 }));
 app.set('trust proxy', 1);
 
-const allowedOrigins = (process.env.CLIENT_URL || 'http://localhost:5173')
+// Parse CLIENT_URL as a comma-separated list and automatically expand each
+// origin to include its www / non-www counterpart. This means adding
+// https://www.dutylaunch.com to CLIENT_URL is optional — the non-www entry
+// alone is enough to allow both. localhost and raw IP addresses are left
+// as-is (no www variant is added for those).
+const _rawOrigins = (process.env.CLIENT_URL || 'http://localhost:5173')
   .split(',')
-  .map((s) => s.trim())
+  .map((s) => s.trim().replace(/\/+$/, '')) // trim whitespace + trailing slash
   .filter(Boolean);
+
+const _originSet = new Set(_rawOrigins);
+for (const o of _rawOrigins) {
+  try {
+    const u = new URL(o);
+    if (u.hostname.startsWith('www.')) {
+      // Also allow the bare domain (e.g. https://dutylaunch.com)
+      u.hostname = u.hostname.slice(4);
+      _originSet.add(u.origin);
+    } else if (u.hostname !== 'localhost' && !/^\d+\.\d+\.\d+\.\d+$/.test(u.hostname)) {
+      // Also allow the www domain (e.g. https://www.dutylaunch.com)
+      u.hostname = 'www.' + u.hostname;
+      _originSet.add(u.origin);
+    }
+  } catch (_) { /* malformed URL — skip */ }
+}
+const allowedOrigins = [..._originSet];
 
 app.use(cors({
   origin(origin, callback) {
