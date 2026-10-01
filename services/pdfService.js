@@ -276,8 +276,8 @@ exports.pdfService = {
         txt('Deductions', CX[5], hdr2Y + 8.5, C[5], { font: 'Helvetica-Bold', size: 7.5, align: 'center', paddingL: 0 });
 
         curY += RH_HDR;
-        // RED separator (ref rows 53-54, colour rgb 253,0,0) between header & data
-        hline(curY, '#fd0000', 1.2);
+        // BLUE separator between header & data (matches the line above the header)
+        hline(curY, '#1c15bf', 1.2);
 
         // Vertical dividers for header
         for (let c = 1; c < 6; c++) vline(CX[c], edHdrTop, curY);
