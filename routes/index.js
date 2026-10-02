@@ -362,6 +362,8 @@ router.get('/leads/stats', authenticate, leadController.getLeadStats);
 // leadController.getSalesTeamOverview) — must be registered BEFORE
 // '/leads/:id' or "team-overview" would be captured as an :id.
 router.get('/leads/team-overview', authenticate, leadController.getSalesTeamOverview);
+router.get('/leads/archived', authenticate, leadController.getArchivedLeads);
+router.patch('/leads/bulk-archive', authenticate, leadController.bulkArchiveLeads);
 router.get('/leads/batches', authenticate, leadController.getUploadBatches);
 router.delete('/leads/batch/:batch', authenticate, leadController.deleteBatch);
 router.get('/leads', authenticate, leadController.getLeads);
@@ -369,6 +371,8 @@ router.get('/leads/:id', authenticate, leadController.getLead);
 router.patch('/leads/:id/status', authenticate, leadController.updateLeadStatus);
 router.patch('/leads/:id/assign', authenticate, leadController.reassignLead);
 router.post('/leads/:id/reveal', authenticate, leadController.revealLead);
+router.patch('/leads/:id/archive', authenticate, leadController.archiveLead);
+router.patch('/leads/:id/restore', authenticate, leadController.restoreLead);
 
 // ─── Daily Reports ───────────────────────────────────────────────────────────
 router.get('/daily-reports/stats', authenticate, dailyReportController.getReportStats);

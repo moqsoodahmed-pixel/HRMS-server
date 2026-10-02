@@ -690,7 +690,7 @@ const getLeads = async (req, res, next) => {
     const { page, limit, skip } = parsePagination(req.query, 50);
     const { status, search, uploadBatch, assignedTo, leadDate } = req.query;
 
-    const query = {};
+    const query = { isArchived: { $ne: true } };
 
     if (req.user?.role === "EMPLOYEE") {
       const { Employee } = require("../models/Employee");
@@ -1034,7 +1034,7 @@ const rebalanceLeads = async (req, res, next) => {
       throw new AppError("No active Sales/Business Development employees to rebalance across", 400, "NO_SALES_TEAM");
     }
 
-    const leads = await Lead.find({}).select("_id name assignedTo").sort({ createdAt: 1 });
+    const leads = await Lead.find({ isArchived: { $ne: true } }).select("_id name assignedTo").sort({ createdAt: 1 });
     const count = salesTeam.length;
     const now = new Date();
     const changedByUserId = req.user.userId;
@@ -1101,7 +1101,7 @@ const rebalanceLeads = async (req, res, next) => {
 const getLeadStats = async (req, res, next) => {
   try {
     const { uploadBatch } = req.query;
-    const matchQuery = {};
+    const matchQuery = { isArchived: { $ne: true } };
     if (uploadBatch) matchQuery.uploadBatch = uploadBatch;
 
     const [statusAgg, employeeAgg, total, unassigned] = await Promise.all([
@@ -1283,7 +1283,7 @@ const getSalesTeamOverview = async (req, res, next) => {
     // One aggregate for the whole team: counts of leads per (rep, status).
     const grouped = reportIds.length
       ? await Lead.aggregate([
-        { $match: { assignedTo: { $in: reportIds } } },
+        { $match: { assignedTo: { $in: reportIds }, isArchived: { $ne: true } } },
         { $group: { _id: { assignedTo: "$assignedTo", status: "$status" }, count: { $sum: 1 } } },
       ])
       : [];
@@ -1332,4 +1332,158 @@ const getSalesTeamOverview = async (req, res, next) => {
   } catch (err) { next(err); }
 };
 
-module.exports = { uploadLeads, previewLeads, getLeads, getLead, updateLeadStatus, reassignLead, bulkAssignLeads, rebalanceLeads, getLeadStats, getUploadBatches, deleteBatch, revealLead, getSalesTeamOverview };
+// ─── Archive / Restore / Archived List ──────────────────────────────────────
+
+/**
+ * PATCH /api/leads/:id/archive
+ * Soft-delete a lead — sets isArchived = true, records who/when/why.
+ * Sales team employees can archive their own assigned leads; management can
+ * archive any lead.
+ */
+const archiveLead = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    assertObjectId(id, "Lead ID");
+    const { reason } = req.body;
+
+    const lead = await Lead.findById(id);
+    if (!lead) throw new AppError("Lead not found", 404, "NOT_FOUND");
+    if (lead.isArchived) throw new AppError("Lead is already archived", 400, "ALREADY_ARCHIVED");
+
+    // Employees can only archive leads assigned to them
+    if (req.user?.role === "EMPLOYEE") {
+      const { Employee } = require("../models/Employee");
+      const emp = await Employee.findOne({ user: req.user.userId }).select("_id").lean();
+      if (!emp || String(lead.assignedTo) !== String(emp._id)) {
+        throw new AppError("You can only archive leads assigned to you", 403, "FORBIDDEN");
+      }
+    } else if (!canManage(req.user?.role)) {
+      throw new AppError("Not authorized to archive leads", 403, "FORBIDDEN");
+    }
+
+    lead.isArchived = true;
+    lead.archivedAt = new Date();
+    lead.archivedBy = req.user.userId;
+    lead.archiveReason = reason || "";
+    await lead.save();
+
+    res.json({ message: "Lead archived successfully", data: lead });
+  } catch (err) { next(err); }
+};
+
+/**
+ * PATCH /api/leads/:id/restore
+ * Un-archive a lead — management only.
+ */
+const restoreLead = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    assertObjectId(id, "Lead ID");
+
+    if (!canManage(req.user?.role)) {
+      throw new AppError("Only management can restore archived leads", 403, "FORBIDDEN");
+    }
+
+    const lead = await Lead.findById(id);
+    if (!lead) throw new AppError("Lead not found", 404, "NOT_FOUND");
+    if (!lead.isArchived) throw new AppError("Lead is not archived", 400, "NOT_ARCHIVED");
+
+    lead.isArchived = false;
+    lead.archivedAt = undefined;
+    lead.archivedBy = undefined;
+    lead.archiveReason = undefined;
+    await lead.save();
+
+    res.json({ message: "Lead restored successfully", data: lead });
+  } catch (err) { next(err); }
+};
+
+/**
+ * GET /api/leads/archived
+ * Returns paginated list of archived leads, scoped by role just like getLeads.
+ */
+const getArchivedLeads = async (req, res, next) => {
+  try {
+    const { page, limit } = parsePagination(req.query);
+    const { search } = req.query;
+
+    const query = { isArchived: true };
+
+    // Role-based scoping — same as getLeads
+    if (req.user?.role === "EMPLOYEE") {
+      const { Employee } = require("../models/Employee");
+      const emp = await Employee.findOne({ user: req.user.userId }).select("_id").lean();
+      if (emp) query.assignedTo = emp._id;
+    } else if (req.user?.role === "MANAGER") {
+      const { Employee } = require("../models/Employee");
+      const self = await Employee.findOne({ user: req.user.userId }).select("_id").lean();
+      if (self) {
+        const reports = await Employee.find({ reportingManager: self._id }).select("_id").lean();
+        const teamIds = [self._id, ...reports.map((r) => r._id)];
+        query.assignedTo = { $in: teamIds };
+      }
+    }
+    // Elevated roles see all archived leads (no extra filter)
+
+    if (search) {
+      query.$or = [
+        { name: { $regex: search, $options: "i" } },
+        { company: { $regex: search, $options: "i" } },
+        { email: { $regex: search, $options: "i" } },
+      ];
+    }
+
+    const [leads, total] = await Promise.all([
+      Lead.find(query)
+        .sort({ archivedAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .populate("assignedTo", "fullName employeeCode")
+        .lean(),
+      Lead.countDocuments(query),
+    ]);
+
+    res.json({
+      data: req.user?.role === "EMPLOYEE" ? leads.map(maskLead) : leads,
+      meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
+    });
+  } catch (err) { next(err); }
+};
+
+/**
+ * PATCH /api/leads/bulk-archive
+ * Archive multiple leads at once. Body: { leadIds: [...], reason: "..." }
+ */
+const bulkArchiveLeads = async (req, res, next) => {
+  try {
+    const { leadIds, reason } = req.body;
+    if (!Array.isArray(leadIds) || leadIds.length === 0) {
+      throw new AppError("leadIds array is required", 400, "VALIDATION");
+    }
+
+    const query = { _id: { $in: leadIds }, isArchived: { $ne: true } };
+
+    // Employees can only archive their own leads
+    if (req.user?.role === "EMPLOYEE") {
+      const { Employee } = require("../models/Employee");
+      const emp = await Employee.findOne({ user: req.user.userId }).select("_id").lean();
+      if (!emp) throw new AppError("Employee record not found", 404, "NOT_FOUND");
+      query.assignedTo = emp._id;
+    } else if (!canManage(req.user?.role)) {
+      throw new AppError("Not authorized to archive leads", 403, "FORBIDDEN");
+    }
+
+    const result = await Lead.updateMany(query, {
+      $set: {
+        isArchived: true,
+        archivedAt: new Date(),
+        archivedBy: req.user.userId,
+        archiveReason: reason || "",
+      },
+    });
+
+    res.json({ message: `${result.modifiedCount} lead(s) archived`, modifiedCount: result.modifiedCount });
+  } catch (err) { next(err); }
+};
+
+module.exports = { uploadLeads, previewLeads, getLeads, getLead, updateLeadStatus, reassignLead, bulkAssignLeads, rebalanceLeads, getLeadStats, getUploadBatches, deleteBatch, revealLead, getSalesTeamOverview, archiveLead, restoreLead, getArchivedLeads, bulkArchiveLeads };

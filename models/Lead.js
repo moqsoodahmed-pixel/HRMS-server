@@ -72,6 +72,14 @@ const leadSchema = new mongoose.Schema(
     totalInBatch: { type: Number },
     validInBatch: { type: Number },
     skippedInBatch: { type: Number },
+    // Soft-delete: "archived" leads are hidden from active lists but kept
+    // in the database and visible in the History section. Sales team members
+    // can archive leads they consider done/dead, and management can restore
+    // them if needed.
+    isArchived: { type: Boolean, default: false },
+    archivedAt: { type: Date },
+    archivedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    archiveReason: { type: String, trim: true },
   },
   { timestamps: true }
 );
@@ -85,5 +93,7 @@ leadSchema.index({ normalizedEmail: 1 });
 leadSchema.index({ assignedTo: 1 });
 leadSchema.index({ assignedTo: 1, status: 1 });
 leadSchema.index({ uploadBatch: 1, createdAt: -1 });
+leadSchema.index({ isArchived: 1 });
+leadSchema.index({ isArchived: 1, assignedTo: 1 });
 
 exports.Lead = mongoose.model("Lead", leadSchema);
